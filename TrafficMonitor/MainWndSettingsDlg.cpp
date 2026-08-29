@@ -31,6 +31,7 @@ void CMainWndSettingsDlg::SetControlMouseWheelEnable(bool enable)
     m_double_click_combo.SetMouseWheelEnable(enable);
     m_font_size_edit.SetMouseWheelEnable(enable);
     m_memory_display_combo.SetMouseWheelEnable(enable);
+    m_cpu_freq_unit_combo.SetMouseWheelEnable(enable);
 }
 
 bool CMainWndSettingsDlg::InitializeControls()
@@ -56,6 +57,11 @@ bool CMainWndSettingsDlg::InitializeControls()
     RepositionTextBasedControls({
         { CtrlTextInfo::L1, IDC_MEMORY_DISPLAY_MODE_STATIC },
         { CtrlTextInfo::C0, IDC_MEMORY_DISPLAY_COMBO }
+    });
+
+    RepositionTextBasedControls({
+        { CtrlTextInfo::L1, IDC_CPU_FREQ_UNIT_STATIC },
+        { CtrlTextInfo::C0, IDC_CPU_FREQ_UNIT_COMBO }
     });
 
     RepositionTextBasedControls({
@@ -135,6 +141,7 @@ void CMainWndSettingsDlg::DoDataExchange(CDataExchange* pDX)
     DDX_Control(pDX, IDC_FONT_SIZE_EDIT, m_font_size_edit);
     DDX_Control(pDX, IDC_DOUBLE_CLICK_COMBO, m_double_click_combo);
     DDX_Control(pDX, IDC_MEMORY_DISPLAY_COMBO, m_memory_display_combo);
+    DDX_Control(pDX, IDC_CPU_FREQ_UNIT_COMBO, m_cpu_freq_unit_combo);
 }
 
 
@@ -168,6 +175,7 @@ BEGIN_MESSAGE_MAP(CMainWndSettingsDlg, CTabDlg)
     ON_BN_CLICKED(IDC_ALOW_OUT_OF_BORDER_CHECK, &CMainWndSettingsDlg::OnBnClickedAlowOutOfBorderCheck)
     ON_BN_CLICKED(IDC_RESOTRE_SKIN_DEFAULT_BUTTON, &CMainWndSettingsDlg::OnBnClickedResotreSkinDefaultButton)
     ON_EN_CHANGE(IDC_FONT_SIZE_EDIT, &CMainWndSettingsDlg::OnEnChangeFontSizeEdit)
+    ON_CBN_SELCHANGE(IDC_CPU_FREQ_UNIT_COMBO, &CMainWndSettingsDlg::OnCbnSelchangeCpuFreqUnitCombo)
 END_MESSAGE_MAP()
 
 
@@ -255,6 +263,10 @@ BOOL CMainWndSettingsDlg::OnInitDialog()
     m_memory_display_combo.AddString(CCommon::LoadText(IDS_MEMORY_USED));
     m_memory_display_combo.AddString(CCommon::LoadText(IDS_MEMORY_AVAILABLE));
     m_memory_display_combo.SetCurSel(static_cast<int>(m_data.memory_display));
+
+    m_cpu_freq_unit_combo.AddString(_T("GHz"));
+    m_cpu_freq_unit_combo.AddString(_T("G"));
+    m_cpu_freq_unit_combo.SetCurSel(static_cast<int>(m_data.cpu_freq_unit));
 
     CheckDlgButton(IDC_ALWAYS_ON_TOP_CHECK, m_data.m_always_on_top);
     CheckDlgButton(IDC_MOUSE_PENETRATE_CHECK, m_data.m_mouse_penetrate);
@@ -443,8 +455,15 @@ void CMainWndSettingsDlg::OnOK()
         m_data.font.size = font_size;
     }
     GetDlgItemText(IDC_FONT_NAME_EDIT, m_data.font.name);
+    m_data.cpu_freq_unit = static_cast<CpuFreqUnit>(m_cpu_freq_unit_combo.GetCurSel());
 
     CTabDlg::OnOK();
+}
+
+
+void CMainWndSettingsDlg::OnCbnSelchangeCpuFreqUnitCombo()
+{
+    m_data.cpu_freq_unit = static_cast<CpuFreqUnit>(m_cpu_freq_unit_combo.GetCurSel());
 }
 
 

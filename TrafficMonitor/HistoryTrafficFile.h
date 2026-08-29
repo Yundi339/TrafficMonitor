@@ -7,7 +7,7 @@ public:
 	~CHistoryTrafficFile();
 
 	void Save() const;
-	void SaveTodayOnly() const;	// 仅更新第一行（lines计数）和今天的记录（第二行），用于频繁保存时减少I/O
+	bool SaveTodayOnly() const;	// 将当天记录保存到小型检查点文件
 	void Load();
 	void LoadSize();			//仅读取文件的大小
 	void Merge(const CHistoryTrafficFile& history_traffic, bool ignore_same_data = false);		//合并另一个CHistoryTrafficFile对象。如果ignore_same_data为true，则忽略相同日期的项，否则将相同日期的流量数据相加
@@ -36,6 +36,9 @@ private:
 	bool IsTodayRecord() const;	//检查今天的记录日期是否正确
 	void UpdateCache() const;	//更新缓存（用于统计功能）
 	void WriteTrafficRecord(ofstream& file, const HistoryTraffic& traffic) const;	//写入一条流量记录到文件
+	bool ParseTrafficRecord(const string& line, HistoryTraffic& traffic) const;
+	bool RecoverFromCheckpoint();
+	wstring GetCheckpointPath() const { return m_file_path + L".checkpoint"; }
 	HistoryTraffic CreateTodayTraffic() const;	//创建今天的记录（日期为当前日期，流量为0）
 	void InvalidateCache() const { m_cache_dirty = true; }	//标记缓存过期
 

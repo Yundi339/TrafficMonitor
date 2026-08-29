@@ -49,6 +49,7 @@ protected:
     CButton m_atuo_adapt_light_theme_chk;
     CButton m_auto_set_back_color_chk;
     CComboBox2 m_memory_display_combo;
+    CComboBox2 m_cpu_freq_unit_combo;
     CSpinEdit m_item_space_edit;
     CSpinEdit m_vertical_margin_edit;
     CSpinEdit m_net_speed_figure_max_val_edit;
@@ -124,4 +125,5 @@ public:
     afx_msg void OnCbnSelchangeDisplayToShowTaskbarWndCombo();
     afx_msg void OnBnClickedUsageGraphFollowSystemCheck();
     afx_msg void OnEnChangeFontSizeEdit1();
+    afx_msg void OnCbnSelchangeCpuFreqUnitCombo();
 };

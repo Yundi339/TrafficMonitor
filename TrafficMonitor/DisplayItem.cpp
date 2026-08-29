@@ -309,7 +309,7 @@ CString CommonDisplayItem::GetItemValueSampleText(bool is_main_window) const
             sample_str = _T("40 °C");
             break;
         case TDI_CPU_FREQ:
-            sample_str = _T("1.0 GHz");
+            sample_str = (theApp.m_main_wnd_data.cpu_freq_unit == CpuFreqUnit::G ? _T("1.0 G") : _T("1.0 GHz"));
             break;
         default:
             sample_str = _T("99");
@@ -390,10 +390,11 @@ CString CommonDisplayItem::GetItemValueSampleText(bool is_main_window) const
         //CPU频率
         case TDI_CPU_FREQ:
         {
+            LPCTSTR unit = (theApp.m_taskbar_data.cpu_freq_unit == CpuFreqUnit::G ? _T("G") : _T("GHz"));
             if (theApp.m_taskbar_data.separate_value_unit_with_space)
-                sample_str = _T("1.00 GHz");
+                sample_str.Format(_T("1.00 %s"), unit);
             else
-                sample_str = _T("1.00GHz");
+                sample_str.Format(_T("1.00%s"), unit);
         }
             break;
         //流量

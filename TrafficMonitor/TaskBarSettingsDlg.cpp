@@ -125,6 +125,7 @@ void CTaskBarSettingsDlg::SetControlMouseWheelEnable(bool enable)
     m_digit_number_combo.SetMouseWheelEnable(enable);
     m_font_size_edit.SetMouseWheelEnable(enable);
     m_memory_display_combo.SetMouseWheelEnable(enable);
+    m_cpu_freq_unit_combo.SetMouseWheelEnable(enable);
     m_item_space_edit.SetMouseWheelEnable(enable);
     m_vertical_margin_edit.SetMouseWheelEnable(enable);
     m_net_speed_figure_max_val_edit.SetMouseWheelEnable(enable);
@@ -162,6 +163,10 @@ bool CTaskBarSettingsDlg::InitializeControls()
     RepositionTextBasedControls({
         { CtrlTextInfo::L1, TXT_MEMORY_DISPLAY_MODE },
         { CtrlTextInfo::C0, IDC_MEMORY_DISPLAY_COMBO }
+    });
+    RepositionTextBasedControls({
+        { CtrlTextInfo::L1, IDC_CPU_FREQ_UNIT_STATIC },
+        { CtrlTextInfo::C0, IDC_CPU_FREQ_UNIT_COMBO }
     });
     RepositionTextBasedControls({
         { CtrlTextInfo::L4, IDC_ITEM_SPACING_STATIC },
@@ -220,6 +225,7 @@ void CTaskBarSettingsDlg::DoDataExchange(CDataExchange* pDX)
     DDX_Control(pDX, IDC_AUTO_ADAPT_LIGHT_THEME_CHECK, m_atuo_adapt_light_theme_chk);
     DDX_Control(pDX, IDC_AUTO_SET_BACK_COLOR_CHECK, m_auto_set_back_color_chk);
     DDX_Control(pDX, IDC_MEMORY_DISPLAY_COMBO, m_memory_display_combo);
+    DDX_Control(pDX, IDC_CPU_FREQ_UNIT_COMBO, m_cpu_freq_unit_combo);
     DDX_Control(pDX, IDC_ITEM_SPACE_EDIT, m_item_space_edit);
     DDX_Control(pDX, IDC_VERTICAL_MARGIN_EDIT, m_vertical_margin_edit);
     DDX_Control(pDX, IDC_NET_SPEED_FIGURE_MAX_VALUE_EDIT, m_net_speed_figure_max_val_edit);
@@ -272,6 +278,7 @@ BEGIN_MESSAGE_MAP(CTaskBarSettingsDlg, CTabDlg)
     ON_CBN_SELCHANGE(IDC_DISPLAY_TO_SHOW_TASKBAR_WND_COMBO, &CTaskBarSettingsDlg::OnCbnSelchangeDisplayToShowTaskbarWndCombo)
     ON_BN_CLICKED(IDC_USAGE_GRAPH_FOLLOW_SYSTEM_CHECK, &CTaskBarSettingsDlg::OnBnClickedUsageGraphFollowSystemCheck)
     ON_EN_CHANGE(IDC_FONT_SIZE_EDIT1, &CTaskBarSettingsDlg::OnEnChangeFontSizeEdit1)
+    ON_CBN_SELCHANGE(IDC_CPU_FREQ_UNIT_COMBO, &CTaskBarSettingsDlg::OnCbnSelchangeCpuFreqUnitCombo)
 END_MESSAGE_MAP()
 
 
@@ -398,6 +405,10 @@ BOOL CTaskBarSettingsDlg::OnInitDialog()
     m_memory_display_combo.AddString(CCommon::LoadText(IDS_MEMORY_USED));
     m_memory_display_combo.AddString(CCommon::LoadText(IDS_MEMORY_AVAILABLE));
     m_memory_display_combo.SetCurSel(static_cast<int>(m_data.memory_display));
+
+    m_cpu_freq_unit_combo.AddString(_T("GHz"));
+    m_cpu_freq_unit_combo.AddString(_T("G"));
+    m_cpu_freq_unit_combo.SetCurSel(static_cast<int>(m_data.cpu_freq_unit));
 
     CheckDlgButton(IDC_SHOW_NET_SPEED_FIGURE_CHECK, m_data.show_netspeed_figure);
     m_net_speed_figure_max_val_edit.SetRange(1, 1024);
@@ -837,6 +848,12 @@ void CTaskBarSettingsDlg::OnCbnSelchangeMemoryDisplayCombo()
 {
     // TODO: 在此添加控件通知处理程序代码
     m_data.memory_display = static_cast<MemoryDisplay>(m_memory_display_combo.GetCurSel());
+}
+
+
+void CTaskBarSettingsDlg::OnCbnSelchangeCpuFreqUnitCombo()
+{
+    m_data.cpu_freq_unit = static_cast<CpuFreqUnit>(m_cpu_freq_unit_combo.GetCurSel());
 }
 
 

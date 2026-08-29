@@ -690,10 +690,9 @@ void CTrafficMonitorDlg::UpdateNotifyIconTip()
 
 }
 
-void CTrafficMonitorDlg::SaveHistoryTraffic()
+bool CTrafficMonitorDlg::SaveHistoryTraffic()
 {
-    // 使用增量保存，只更新第一行和今天的记录，减少I/O操作
-    m_history_traffic.SaveTodayOnly();
+    return m_history_traffic.SaveTodayOnly();
 }
 
 void CTrafficMonitorDlg::SaveHistoryTrafficFull()
@@ -1300,13 +1299,19 @@ void CTrafficMonitorDlg::DoMonitorAcquisition()
     //检测当前日期是否改变，如果已改变，就向历史流量列表插入一个新的日期
     SYSTEMTIME current_time;
     GetLocalTime(&current_time);
-    static int last_check_day = -1;  //用于检测日期变化，重置保存状态
-    if (m_history_traffic.GetTodayTraffic().day != current_time.wDay)
+    static int last_check_day = -1;
+    static unsigned __int64 last_checkpoint_kbytes = 0;
+    static bool checkpoint_initialized = false;
+    const HistoryTraffic& today_traffic = m_history_traffic.GetTodayTraffic();
+    if (today_traffic.year != current_time.wYear || today_traffic.month != current_time.wMonth || today_traffic.day != current_time.wDay)
     {
         m_history_traffic.OnDateChanged();
         theApp.m_today_up_traffic = 0;
         theApp.m_today_down_traffic = 0;
-        last_check_day = -1;  //重置日期标记，下次检查时会重新初始化保存状态
+        SaveHistoryTrafficFull();
+        checkpoint_initialized = SaveHistoryTraffic();
+        last_check_day = current_time.wDay;
+        last_checkpoint_kbytes = 0;
     }
 
     //统计今天已使用的流量
@@ -1314,34 +1319,22 @@ void CTrafficMonitorDlg::DoMonitorAcquisition()
     theApp.m_today_down_traffic += cur_in_speed;
     m_history_traffic.GetTodayTraffic().up_kBytes = theApp.m_today_up_traffic / 1024u;
     m_history_traffic.GetTodayTraffic().down_kBytes = theApp.m_today_down_traffic / 1024u;
-    //每隔30秒保存一次流量历史记录
-    if (m_monitor_time_cnt % GetMonitorTimerCount(30) == GetMonitorTimerCount(30) - 1)
+    //每隔5秒保存一次小型检查点，强制终止时最多损失一个检查点周期的数据
+    if (m_monitor_time_cnt % GetMonitorTimerCount(5) == GetMonitorTimerCount(5) - 1)
     {
-        static unsigned __int64 last_today_kbytes = 0;
-        static bool last_today_kbytes_initialized = false;
         unsigned __int64 current_kbytes = m_history_traffic.GetTodayTraffic().kBytes();
-        
-        //如果日期改变了，重置初始化状态
         if (last_check_day != current_time.wDay)
         {
-            last_today_kbytes_initialized = false;
+            checkpoint_initialized = false;
             last_check_day = current_time.wDay;
         }
-        
-        //首次检查时初始化，不保存
-        if (!last_today_kbytes_initialized)
+
+        if (!checkpoint_initialized || current_kbytes != last_checkpoint_kbytes)
         {
-            last_today_kbytes = current_kbytes;
-            last_today_kbytes_initialized = true;
-        }
-        else
-        {
-            //只有当30秒内流量变化超过10MB时才保存历史流量记录，防止磁盘写入过于频繁
-            unsigned __int64 change_kbytes = current_kbytes - last_today_kbytes;
-            if (change_kbytes >= 10240u) // 10MB = 10240KB
+            if (SaveHistoryTraffic())
             {
-                SaveHistoryTraffic();
-                last_today_kbytes = current_kbytes;
+                last_checkpoint_kbytes = current_kbytes;
+                checkpoint_initialized = true;
             }
         }
     }
