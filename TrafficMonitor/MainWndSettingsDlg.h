@@ -36,6 +36,7 @@ protected:
     CSpinEdit m_font_size_edit;
     CComboBox2 m_double_click_combo;
     CComboBox2 m_memory_display_combo;
+    CComboBox2 m_cpu_freq_unit_combo;
 
 protected:
     void DrawStaticColor();
@@ -81,4 +82,5 @@ public:
     afx_msg void OnBnClickedAlowOutOfBorderCheck();
     afx_msg void OnBnClickedResotreSkinDefaultButton();
     afx_msg void OnEnChangeFontSizeEdit();
+    afx_msg void OnCbnSelchangeCpuFreqUnitCombo();
 };

@@ -384,7 +384,7 @@ CString CCommon::FreqToString(float freq, const PublicSettingData& cfg)
         str_val.Format(_T("%.2f"), freq);
     if (cfg.separate_value_unit_with_space)
         str_val += _T(' ');
-    str_val += _T("GHz");
+    str_val += (cfg.cpu_freq_unit == CpuFreqUnit::G ? _T("G") : _T("GHz"));
     return str_val;
 }
 //CString CCommon::KBytesToString(unsigned int kb_size)

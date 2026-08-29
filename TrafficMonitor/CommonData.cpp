@@ -4,6 +4,7 @@
 #include "CalendarHelper.h"
 #include "TrafficMonitor.h"
 #include "WindowsSettingHelper.h"
+#include <limits>
 
 ///////////////////////////////////////////////////////////////////////////////////
 int Date::week() const
@@ -50,7 +51,8 @@ bool Date::DateEqual(const Date& a, const Date& b)
 //HistoryTraffic
 unsigned __int64 HistoryTraffic::kBytes() const
 {
-    return up_kBytes + down_kBytes;
+    const unsigned __int64 max_value = (std::numeric_limits<unsigned __int64>::max)();
+    return up_kBytes > max_value - down_kBytes ? max_value : up_kBytes + down_kBytes;
 }
 
 

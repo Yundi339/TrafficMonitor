@@ -46,6 +46,18 @@ enum class SpeedUnit
     MBPS        //MB/s
 };
 
+//CPU频率单位
+enum class CpuFreqUnit
+{
+    GHZ,        //GHz
+    G           //G
+};
+
+inline CpuFreqUnit NormalizeCpuFreqUnit(int value)
+{
+    return value == static_cast<int>(CpuFreqUnit::G) ? CpuFreqUnit::G : CpuFreqUnit::GHZ;
+}
+
 
 //硬件监控的项目
 enum HardwareItem
@@ -253,6 +265,7 @@ struct PublicSettingData
 
     bool unit_byte{ true };             //使用字节(B)而不是比特(b)为单位
     SpeedUnit speed_unit;       //网速的单位
+    CpuFreqUnit cpu_freq_unit{ CpuFreqUnit::GHZ };  //CPU频率的单位
     bool hide_unit;         //隐藏单位
     bool hide_percent;      //隐藏百分号
     DoubleClickAction double_click_action;      //鼠标双击动作

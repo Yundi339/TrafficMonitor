@@ -1,6 +1,91 @@
 #include "stdafx.h"
 #include "HistoryTrafficFile.h"
 #include "Common.h"
+#include <limits>
+
+namespace
+{
+	bool HasTraffic(const HistoryTraffic& traffic)
+	{
+		return traffic.up_kBytes != 0 || traffic.down_kBytes != 0;
+	}
+
+	unsigned __int64 SaturatedAdd(unsigned __int64 left, unsigned __int64 right)
+	{
+		const unsigned __int64 max_value = (std::numeric_limits<unsigned __int64>::max)();
+		return left > max_value - right ? max_value : left + right;
+	}
+
+	unsigned __int64 KBytesToBytes(unsigned __int64 k_bytes)
+	{
+		const unsigned __int64 max_value = (std::numeric_limits<unsigned __int64>::max)();
+		return k_bytes > max_value / 1024 ? max_value : k_bytes * 1024;
+	}
+
+	bool ParseUnsigned64(const string& text, unsigned __int64& value)
+	{
+		if (text.empty())
+			return false;
+
+		const unsigned __int64 max_value = (std::numeric_limits<unsigned __int64>::max)();
+		unsigned __int64 parsed{};
+		for (char ch : text)
+		{
+			if (ch < '0' || ch > '9')
+				return false;
+			unsigned int digit = static_cast<unsigned int>(ch - '0');
+			if (parsed > (max_value - digit) / 10)
+				return false;
+			parsed = parsed * 10 + digit;
+		}
+		value = parsed;
+		return true;
+	}
+
+	template<typename Writer>
+	bool WriteFileAtomically(const wstring& file_path, Writer writer)
+	{
+		const wstring temp_path = file_path + L".tmp";
+		DeleteFileW(temp_path.c_str());
+
+		ofstream file{ temp_path, std::ios::out | std::ios::trunc };
+		if (!file.is_open())
+			return false;
+
+		writer(file);
+		file.flush();
+		bool success = file.good();
+		file.close();
+		success = success && !file.fail();
+		if (!success)
+		{
+			DeleteFileW(temp_path.c_str());
+			return false;
+		}
+
+		HANDLE file_handle = CreateFileW(temp_path.c_str(), GENERIC_WRITE, FILE_SHARE_READ, nullptr,
+			OPEN_EXISTING, FILE_ATTRIBUTE_NORMAL, nullptr);
+		if (file_handle == INVALID_HANDLE_VALUE)
+		{
+			DeleteFileW(temp_path.c_str());
+			return false;
+		}
+		success = (FlushFileBuffers(file_handle) != FALSE);
+		CloseHandle(file_handle);
+		if (!success)
+		{
+			DeleteFileW(temp_path.c_str());
+			return false;
+		}
+
+		if (!MoveFileExW(temp_path.c_str(), file_path.c_str(), MOVEFILE_REPLACE_EXISTING | MOVEFILE_WRITE_THROUGH))
+		{
+			DeleteFileW(temp_path.c_str());
+			return false;
+		}
+		return true;
+	}
+}
 
 CHistoryTrafficFile::CHistoryTrafficFile(const wstring& file_path)
 	: m_file_path(file_path)
@@ -50,31 +135,27 @@ void CHistoryTrafficFile::UpdateCache() const
 	m_cache_dirty = false; // 标记缓存已更新
 }
 
-void CHistoryTrafficFile::Save() const
+bool CHistoryTrafficFile::SaveToFile(const wstring& file_path) const
 {
-	ofstream file{ m_file_path };
-	if (!file.is_open())
-	{
-		return;
-	}
+	return WriteFileAtomically(file_path, [this](ofstream& file) {
+		char buff[64];
+		size_t total_size = 1 + m_history_traffics.size();
+		sprintf_s(buff, "lines: \"%u\"", static_cast<unsigned int>(total_size));
+		file << buff << "\n";
+		WriteTrafficRecord(file, m_today_traffic);
+		for (const auto& history_traffic : m_history_traffics)
+			WriteTrafficRecord(file, history_traffic);
+	});
+}
 
-	char buff[64];
-	
-	// 第一行：总记录数（今天的记录 + 历史记录）
-	size_t total_size = 1 + m_history_traffics.size();
-	sprintf_s(buff, "lines: \"%u\"", static_cast<unsigned int>(total_size));
-	file << buff << "\n";
+bool CHistoryTrafficFile::Save() const
+{
+	return SaveToFile(m_file_path);
+}
 
-	// 第二行：今天的记录
-	WriteTrafficRecord(file, m_today_traffic);
-
-	// 第三行及之后：历史记录链表
-	for (const auto& history_traffic : m_history_traffics)
-	{
-		WriteTrafficRecord(file, history_traffic);
-	}
-
-	file.close();
+bool CHistoryTrafficFile::SaveBackup() const
+{
+	return SaveToFile(GetBackupPath());
 }
 
 bool CHistoryTrafficFile::IsTodayRecord() const
@@ -88,220 +169,181 @@ bool CHistoryTrafficFile::IsTodayRecord() const
 			m_today_traffic.day == current_time.wDay);
 }
 
-void CHistoryTrafficFile::SaveTodayOnly() const
+bool CHistoryTrafficFile::SaveTodayOnly() const
 {
-	// 增量保存：只更新第一行（lines计数）和第二行（今天的记录）
-	// 前提：今天的记录日期正确（程序自己维护，无需读取文件判断）
-	
-	// 如果今天的记录日期不正确，说明日期刚改变，使用完整保存
 	if (!IsTodayRecord())
-	{
-		Save();
-		return;
-	}
+		return false;
 
-	// 文件不存在时，使用完整保存（首次保存）
-	if (!CCommon::FileExist(m_file_path.c_str()))
-	{
-		Save();
-		return;
-	}
-
-	// 读取文件剩余行（第3行及之后），用于增量更新
-	vector<string> remaining_lines;
-	ifstream in_file{ m_file_path };
-	if (in_file.is_open())
-	{
-		string line;
-		int line_num = 0;
-		while (std::getline(in_file, line))
-		{
-			line_num++;
-			if (line_num > 2) // 跳过前两行
-			{
-				remaining_lines.push_back(line);
-			}
-		}
-		in_file.close();
-	}
-
-	// 写入更新后的文件
-	ofstream out_file{ m_file_path };
-	if (!out_file.is_open())
-	{
-		return;
-	}
-
-	// 第一行：lines计数（今天的记录 + 历史记录）
-	size_t total_size = 1 + m_history_traffics.size();
-	char buff[64];
-	sprintf_s(buff, "lines: \"%u\"", static_cast<unsigned int>(total_size));
-	out_file << buff << "\n";
-
-	// 第二行：今天的记录
-	WriteTrafficRecord(out_file, m_today_traffic);
-
-	// 剩余行：从文件读取，直接写入（不格式化）
-	for (const auto& line : remaining_lines)
-	{
-		out_file << line << "\n";
-	}
-
-	out_file.close();
+	return WriteFileAtomically(GetCheckpointPath(), [this](ofstream& file) {
+		WriteTrafficRecord(file, m_today_traffic);
+	});
 }
 
-void CHistoryTrafficFile::Load()
+bool CHistoryTrafficFile::ParseTrafficRecord(const string& line, HistoryTraffic& traffic) const
+{
+	if (line.size() < 12 || line[4] != '/' || line[7] != '/' || line[10] != ' ')
+		return false;
+	for (size_t index : { 0u, 1u, 2u, 3u, 5u, 6u, 8u, 9u })
+	{
+		if (line[index] < '0' || line[index] > '9')
+			return false;
+	}
+
+	HistoryTraffic parsed{};
+	parsed.year = atoi(line.substr(0, 4).c_str());
+	parsed.month = atoi(line.substr(5, 2).c_str());
+	parsed.day = atoi(line.substr(8, 2).c_str());
+	SYSTEMTIME record_date{};
+	record_date.wYear = static_cast<WORD>(parsed.year);
+	record_date.wMonth = static_cast<WORD>(parsed.month);
+	record_date.wDay = static_cast<WORD>(parsed.day);
+	FILETIME ignored_file_time{};
+	if (parsed.year < 1900 || parsed.year > 3000 || !::SystemTimeToFileTime(&record_date, &ignored_file_time))
+		return false;
+
+	size_t separator_index = line.find('/', 11);
+	parsed.mixed = (separator_index == string::npos);
+	if (parsed.mixed)
+	{
+		if (!ParseUnsigned64(line.substr(11), parsed.down_kBytes))
+			return false;
+		parsed.up_kBytes = 0;
+	}
+	else
+	{
+		if (line.find('/', separator_index + 1) != string::npos
+			|| !ParseUnsigned64(line.substr(11, separator_index - 11), parsed.up_kBytes)
+			|| !ParseUnsigned64(line.substr(separator_index + 1), parsed.down_kBytes))
+			return false;
+	}
+
+	traffic = parsed;
+	return true;
+}
+
+bool CHistoryTrafficFile::RecoverFromCheckpoint()
+{
+	ifstream file{ GetCheckpointPath() };
+	string line;
+	HistoryTraffic checkpoint;
+	if (!file.is_open() || !getline(file, line) || !ParseTrafficRecord(line, checkpoint) || !HasTraffic(checkpoint))
+		return false;
+
+	HistoryTraffic today = CreateTodayTraffic();
+	if (HistoryTraffic::DateGreater(checkpoint, today))
+		return false;
+
+	HistoryTraffic* target = nullptr;
+	if (HistoryTraffic::DateEqual(checkpoint, m_today_traffic))
+	{
+		target = &m_today_traffic;
+	}
+	else
+	{
+		auto iter = std::find_if(m_history_traffics.begin(), m_history_traffics.end(),
+			[&checkpoint](const HistoryTraffic& item) { return HistoryTraffic::DateEqual(item, checkpoint); });
+		if (iter == m_history_traffics.end())
+		{
+			m_history_traffics.push_back(checkpoint);
+			return true;
+		}
+		target = &(*iter);
+	}
+
+	return MergeTrafficRecord(*target, checkpoint, true);
+}
+
+bool CHistoryTrafficFile::Load()
 {
 	m_today_traffic = HistoryTraffic{}; // 初始化今天的记录
 	m_history_traffics.clear(); // 清空历史记录链表
 	InvalidateCache(); // 标记缓存过期
 
 	ifstream file{ m_file_path };
-	string current_line, temp;
+	string current_line;
 	HistoryTraffic traffic;
 	bool is_first_data_line = true; // 标记是否是第一条数据行（今天的记录）
-	
-	if (CCommon::FileExist(m_file_path.c_str()))
+	auto load_record = [&](const string& line)
 	{
-		// 跳过第一行（lines:）
-		std::getline(file, current_line);
-		
-		while (!file.eof())
+		if (ParseTrafficRecord(line, traffic) && HasTraffic(traffic))
 		{
-			std::getline(file, current_line);
-
-			if (current_line.size() < 12)
+			if (is_first_data_line)
 			{
-				continue;
-			}
-			temp = current_line.substr(0, 4);
-			traffic.year = atoi(temp.c_str());
-			if (traffic.year < 1900 || traffic.year > 3000)
-			{
-				continue;
-			}
-			temp = current_line.substr(5, 2);
-			traffic.month = atoi(temp.c_str());
-			if (traffic.month < 1 || traffic.month > 12)
-			{
-				continue;
-			}
-			temp = current_line.substr(8, 2);
-			traffic.day = atoi(temp.c_str());
-			if (traffic.day < 1 || traffic.day > 31)
-			{
-				continue;
-			}
-
-			size_t separator_index = current_line.find(L'/', 11);
-			traffic.mixed = (separator_index == wstring::npos);
-			if (traffic.mixed)
-			{
-				temp = current_line.substr(11);
-				traffic.down_kBytes = atoll(temp.c_str());
-				traffic.up_kBytes = 0;
+				m_today_traffic = traffic;
+				is_first_data_line = false;
 			}
 			else
-			{
-				temp = current_line.substr(11, separator_index - 11);
-				traffic.up_kBytes = atoll(temp.c_str());
-				temp = current_line.substr(separator_index + 1);
-				traffic.down_kBytes = atoll(temp.c_str());
-			}
-			
-			if (traffic.year > 0 && traffic.month > 0 && traffic.day > 0 && traffic.kBytes() > 0)
-			{
-				if (is_first_data_line)
-				{
-					// 第一条数据行是今天的记录
-					m_today_traffic = traffic;
-					is_first_data_line = false;
-				}
-				else
-				{
-					// 其余是历史记录，插入到链表
-					m_history_traffics.push_back(traffic);
-				}
-			}
+				m_history_traffics.push_back(traffic);
 		}
+	};
+
+	if (file.is_open() && getline(file, current_line))
+	{
+		//兼容缺失或损坏的lines头：首行本身是记录时仍然尝试恢复
+		if (current_line.find("lines:") != 0)
+			load_record(current_line);
+		while (getline(file, current_line))
+			load_record(current_line);
 	}
+	file.close();
 
 	MormalizeData();
-}
-
-void CHistoryTrafficFile::LoadSize()
-{
-	ifstream file{ m_file_path };
-	string current_line, temp;
-	if (CCommon::FileExist(m_file_path.c_str()))
+	bool checkpoint_recovered = RecoverFromCheckpoint();
+	if (checkpoint_recovered)
 	{
-		std::getline(file, current_line); // 读取第一行
-		size_t index = current_line.find("lines:");
-		if (index != wstring::npos)
-		{
-			index = current_line.find("\"", index + 6);
-			size_t index1 = current_line.find("\"", index + 1);
-			temp = current_line.substr(index + 1, index1 - index - 1);
-			m_size = atoll(temp.c_str());
-		}
+		MormalizeData();
 	}
+	return checkpoint_recovered;
 }
 
-void CHistoryTrafficFile::Merge(const CHistoryTrafficFile& history_traffic, bool ignore_same_data)
+bool CHistoryTrafficFile::MergeTrafficRecord(HistoryTraffic& target, const HistoryTraffic& source, bool prefer_larger_value) const
 {
+	const unsigned __int64 old_up = target.up_kBytes;
+	const unsigned __int64 old_down = target.down_kBytes;
+	const bool old_mixed = target.mixed;
+	if (prefer_larger_value)
+	{
+		target.up_kBytes = (std::max)(target.up_kBytes, source.up_kBytes);
+		target.down_kBytes = (std::max)(target.down_kBytes, source.down_kBytes);
+	}
+	else
+	{
+		target.up_kBytes = SaturatedAdd(target.up_kBytes, source.up_kBytes);
+		target.down_kBytes = SaturatedAdd(target.down_kBytes, source.down_kBytes);
+	}
+	target.mixed = target.mixed && source.mixed;
+	return target.up_kBytes != old_up || target.down_kBytes != old_down || target.mixed != old_mixed;
+}
+
+size_t CHistoryTrafficFile::Merge(const CHistoryTrafficFile& history_traffic, bool prefer_larger_value)
+{
+	size_t changed_records{};
 	HistoryTraffic today_traffic = CreateTodayTraffic();
-
-	// 合并今天的记录（只合并日期相同的）
-	// 注意：如果 ignore_same_data=true，说明是从备份恢复，应该取较大的值而不是累加，避免重复累加
-	if (HistoryTraffic::DateEqual(m_today_traffic, history_traffic.m_today_traffic))
+	if (HistoryTraffic::DateEqual(m_today_traffic, history_traffic.m_today_traffic)
+		&& MergeTrafficRecord(m_today_traffic, history_traffic.m_today_traffic, prefer_larger_value))
 	{
-		if (ignore_same_data)
-		{
-			// 从备份恢复时，取较大的值（避免重复累加）
-			// 备份文件通常是程序退出时的完整数据，当前文件可能是程序启动后的不完整数据
-			if (history_traffic.m_today_traffic.up_kBytes > m_today_traffic.up_kBytes)
-			{
-				m_today_traffic.up_kBytes = history_traffic.m_today_traffic.up_kBytes;
-			}
-			if (history_traffic.m_today_traffic.down_kBytes > m_today_traffic.down_kBytes)
-			{
-				m_today_traffic.down_kBytes = history_traffic.m_today_traffic.down_kBytes;
-			}
-		}
-		else
-		{
-			// 正常合并时，累加数据
-			m_today_traffic.up_kBytes += history_traffic.m_today_traffic.up_kBytes;
-			m_today_traffic.down_kBytes += history_traffic.m_today_traffic.down_kBytes;
-		}
+		++changed_records;
 	}
 
-	// 合并历史记录链表
 	for (const HistoryTraffic& traffic : history_traffic.m_history_traffics)
 	{
-		// 跳过"未来"的记录（系统时间可能被调整了）
 		if (HistoryTraffic::DateGreater(traffic, today_traffic))
-		{
-			continue; // 跳过"未来"的记录
-		}
+			continue;
 
-		if (ignore_same_data)
+		auto iter = std::find_if(m_history_traffics.begin(), m_history_traffics.end(),
+			[&traffic](const HistoryTraffic& existing) { return HistoryTraffic::DateEqual(existing, traffic); });
+		if (iter == m_history_traffics.end())
 		{
-			// 如果要忽略相同日期的项，使用线性查找（list不支持随机访问）
-			auto it = std::find_if(m_history_traffics.begin(), m_history_traffics.end(),
-				[&traffic](const HistoryTraffic& existing) {
-					return HistoryTraffic::DateEqual(existing, traffic);
-				});
-			if (it != m_history_traffics.end())
-			{
-				continue; // 找到相同日期的记录，跳过
-			}
+			m_history_traffics.push_back(traffic);
+			++changed_records;
 		}
-		m_history_traffics.push_back(traffic);
+		else if (MergeTrafficRecord(*iter, traffic, prefer_larger_value))
+			++changed_records;
 	}
-	
-	MormalizeData();
-	InvalidateCache(); // 标记缓存过期
+
+	if (changed_records > 0)
+		MormalizeData();
+	return changed_records;
 }
 
 void CHistoryTrafficFile::OnDateChanged()
@@ -309,7 +351,7 @@ void CHistoryTrafficFile::OnDateChanged()
 	// 日期改变时，将今天的记录移到历史记录链表的前面，然后创建新的今天的记录
 	
 	// 如果今天的记录有数据，将其移到历史记录链表
-	if (m_today_traffic.kBytes() > 0)
+	if (HasTraffic(m_today_traffic))
 	{
 		m_history_traffics.push_front(m_today_traffic);
 		// 立即排序，确保数据一致性（按日期从大到小）
@@ -346,8 +388,9 @@ void CHistoryTrafficFile::MormalizeData()
 			++next_it;
 			if (next_it != m_history_traffics.end() && HistoryTraffic::DateEqual(*it, *next_it))
 			{
-				it->up_kBytes += next_it->up_kBytes;
-				it->down_kBytes += next_it->down_kBytes;
+				it->up_kBytes = SaturatedAdd(it->up_kBytes, next_it->up_kBytes);
+				it->down_kBytes = SaturatedAdd(it->down_kBytes, next_it->down_kBytes);
+				it->mixed = it->mixed && next_it->mixed;
 				m_history_traffics.erase(next_it);
 			}
 			else
@@ -396,8 +439,8 @@ void CHistoryTrafficFile::MormalizeData()
 		if (HistoryTraffic::DateEqual(m_today_traffic, today_traffic))
 		{
 			// 如果 m_today_traffic 也是今天的，合并数据（避免数据丢失）
-			m_today_traffic.up_kBytes += it->up_kBytes;
-			m_today_traffic.down_kBytes += it->down_kBytes;
+			m_today_traffic.up_kBytes = SaturatedAdd(m_today_traffic.up_kBytes, it->up_kBytes);
+			m_today_traffic.down_kBytes = SaturatedAdd(m_today_traffic.down_kBytes, it->down_kBytes);
 		}
 		else
 		{
@@ -411,7 +454,7 @@ void CHistoryTrafficFile::MormalizeData()
 	{
 		// 历史记录中没有今天的记录，且 m_today_traffic 也不是今天的
 		// 如果 m_today_traffic 有数据，应该将其移到历史记录链表
-		if (m_today_traffic.kBytes() > 0)
+		if (HasTraffic(m_today_traffic))
 		{
 			m_history_traffics.push_front(m_today_traffic);
 			// 重新排序（因为插入了新记录）
@@ -425,8 +468,8 @@ void CHistoryTrafficFile::MormalizeData()
 	}
 
 	// 更新今天的流量统计
-	m_today_up_traffic = static_cast<__int64>(m_today_traffic.up_kBytes) * 1024;
-	m_today_down_traffic = static_cast<__int64>(m_today_traffic.down_kBytes) * 1024;
+	m_today_up_traffic = KBytesToBytes(m_today_traffic.up_kBytes);
+	m_today_down_traffic = KBytesToBytes(m_today_traffic.down_kBytes);
 	m_today_traffic.mixed = false;
 
 	// 更新总记录数
