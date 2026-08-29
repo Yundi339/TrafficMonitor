@@ -87,7 +87,9 @@ static void TestPluginVersion()
 static string MakeTrafficRecord(const SYSTEMTIME& date, unsigned __int64 up_k_bytes, unsigned __int64 down_k_bytes)
 {
     char buffer[96];
-    sprintf_s(buffer, "%.4u/%.2u/%.2u %llu/%llu", date.wYear, date.wMonth, date.wDay, up_k_bytes, down_k_bytes);
+    sprintf_s(buffer, "%.4u/%.2u/%.2u %llu/%llu",
+        static_cast<unsigned int>(date.wYear), static_cast<unsigned int>(date.wMonth), static_cast<unsigned int>(date.wDay),
+        up_k_bytes, down_k_bytes);
     return buffer;
 }
 
