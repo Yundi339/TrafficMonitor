@@ -93,6 +93,17 @@ void CWin11TaskbarDlg::InitTaskbarWnd()
     ::GetWindowRect(m_hNotify, m_rcNotify);
 }
 
+bool CWin11TaskbarDlg::IsTaskbarStructureChanged()
+{
+    if (IsTaskbarHandleChanged())
+        return true;
+
+    HWND current_notify = ::FindWindowEx(m_hTaskbar, 0, L"TrayNotifyWnd", NULL);
+    HWND current_start = ::FindWindowEx(m_hTaskbar, nullptr, L"Start", NULL);
+    return current_start == NULL || current_notify != m_hNotify || current_start != m_hStart
+        || !::IsWindow(m_hStart) || (m_hNotify != NULL && !::IsWindow(m_hNotify));
+}
+
 void CWin11TaskbarDlg::ResetTaskbarPos()
 {
 }

@@ -38,6 +38,9 @@ public:
 
     void WidthChanged();    //调用此函数通知任务栏窗口宽度改变以强制调整一次任务栏窗口位置
 
+    //检查Explorer是否重建了任务栏或内部子窗口
+    virtual bool IsTaskbarStructureChanged() = 0;
+
     //获取用于检查DPI的矩形区域
     const CRect& GetRectForDpiCheck() const;
 
@@ -159,6 +162,7 @@ protected:
     //查找任务栏的句柄
     //is_scendary_display：找到的是否为副显示器的任务栏
     HWND FindTaskbarHandle(bool& is_scendary_display);
+    bool IsTaskbarHandleChanged();
     CString GetMouseTipsInfo();		//获取鼠标提示
 
     void AddHisToList(CommonDisplayItem item_type, int current_usage_percent);		//将当前利用率数值添加进链表

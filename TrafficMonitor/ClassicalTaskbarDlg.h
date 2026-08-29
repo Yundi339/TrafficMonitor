@@ -11,6 +11,7 @@ private:
     void InitTaskbarWnd() override;
     void ResetTaskbarPos() override;
     virtual HWND GetParentHwnd() override;
+    bool IsTaskbarStructureChanged() override;
 
 private:
     CRect m_rcMinOri;   //初始状态时最小化窗口的矩形区域

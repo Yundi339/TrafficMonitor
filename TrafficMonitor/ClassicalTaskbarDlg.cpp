@@ -83,6 +83,22 @@ void CClassicalTaskbarDlg::InitTaskbarWnd()
     m_top_space = m_rcMin.top - m_rcBar.top;
 }
 
+bool CClassicalTaskbarDlg::IsTaskbarStructureChanged()
+{
+    if (IsTaskbarHandleChanged())
+        return true;
+
+    HWND current_bar = ::FindWindowEx(m_hTaskbar, 0, L"ReBarWindow32", NULL);
+    if (current_bar == NULL)
+        current_bar = ::FindWindowEx(m_hTaskbar, nullptr, L"WorkerW", NULL);
+    HWND current_min = ::FindWindowEx(current_bar, 0, L"MSTaskSwWClass", NULL);
+    if (current_min == NULL)
+        current_min = ::FindWindowEx(current_bar, 0, L"MSTaskListWClass", NULL);
+
+    return current_bar == NULL || current_min == NULL || current_bar != m_hBar || current_min != m_hMin
+        || !::IsWindow(m_hBar) || !::IsWindow(m_hMin);
+}
+
 void CClassicalTaskbarDlg::ResetTaskbarPos()
 {
     //程序关闭的时候，把最小化窗口的width恢复回去
