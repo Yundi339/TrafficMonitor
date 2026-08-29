@@ -118,6 +118,7 @@ protected:
 
     SYSTEMTIME m_start_time;    //程序启动时的时间
     CHistoryTrafficFile m_history_traffic{ theApp.m_history_traffic_path }; //储存历史流量
+    bool m_history_full_save_pending{};
 
     CToolTipCtrl m_tool_tips;
 
@@ -174,7 +175,6 @@ protected:
     bool SaveHistoryTraffic();        // 保存当天流量检查点
     bool SaveHistoryTrafficFull();    // 完整保存，用于程序退出时确保所有数据都保存
     void LoadHistoryTraffic();
-    void BackupHistoryTrafficFile();
 
     void _OnOptions(int tab, CWnd* pParent);   //打开“选项”对话框的处理，tab：打开时切换的标签
 
