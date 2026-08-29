@@ -1,109 +1,114 @@
 name: Release CI
+
 on:
   push:
-    tags: ['v*']
+    tags:
+      - 'v*'
   workflow_dispatch:
+    inputs:
+      version:
+        description: 'Build version (leave empty to append the workflow run number)'
+        required: false
+        type: string
+
+permissions:
+  contents: read
 
 jobs:
-
-  x64_build:
+  prepare:
+    name: Resolve build version
     runs-on: windows-latest
+    outputs:
+      version: ${{ steps.version.outputs.version }}
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Resolve and validate version
+        id: version
+        shell: pwsh
+        env:
+          REQUESTED_VERSION: ${{ inputs.version }}
+          EVENT_NAME: ${{ github.event_name }}
+          REF_NAME: ${{ github.ref_name }}
+          RUN_NUMBER: ${{ github.run_number }}
+        run: |
+          $version = & .\.github\scripts\Resolve-BuildVersion.ps1 `
+            -RequestedVersion $env:REQUESTED_VERSION `
+            -EventName $env:EVENT_NAME `
+            -RefName $env:REF_NAME `
+            -RunNumber ([int]$env:RUN_NUMBER)
+          "version=$version" >> $env:GITHUB_OUTPUT
+          "## Build version: $version" >> $env:GITHUB_STEP_SUMMARY
+
+  build:
+    name: Build ${{ matrix.name }}
+    needs: prepare
+    runs-on: windows-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - name: x64
+            platform: x64
+            output_dir: Bin/x64/Release (lite)
+          - name: x86
+            platform: x86
+            output_dir: Bin/Release (lite)
+          - name: ARM64EC
+            platform: ARM64EC
+            output_dir: Bin/ARM64EC/Release (lite)
 
     steps:
-    - uses: actions/checkout@v3
-      
-    - name: Add msbuild to PATH
-      uses: microsoft/setup-msbuild@v2
-      
-    - name: Run msbuild
-      run: msbuild TrafficMonitor_Lite.sln -p:configuration="Release (lite)" -p:platform=x64 -p:platformToolset=v143
-      
-    - name: Get current time
-      uses: josStorer/get-current-time@v2.0.2
-      id: current-time
-      with:
-        format: YYYYMMDD_HHmmss
-        utcOffset: "+08:00"
-      
-    - name : Upload artifact
-      uses: actions/upload-artifact@v4
-      with:
-        name: x64_${{ steps.current-time.outputs.formattedTime }}_TrafficMonitor
-        path: |
-          Bin/x64/Release (lite)/TrafficMonitor.exe
-          Bin/x64/Release (lite)/*.dll
+      - uses: actions/checkout@v4
 
-    - name : Upload pdb files
-      uses: actions/upload-artifact@v4
-      with:
-        name: x64_${{ steps.current-time.outputs.formattedTime }}_pdb
-        path: Bin/x64/Release (lite)/*.pdb
+      - name: Stamp build version
+        shell: pwsh
+        env:
+          BUILD_VERSION: ${{ needs.prepare.outputs.version }}
+        run: |
+          & .\.github\scripts\Set-ProjectVersion.ps1 -Version $env:BUILD_VERSION
 
-  x86_build:
-    runs-on: windows-latest
+      - name: Add MSBuild to PATH
+        uses: microsoft/setup-msbuild@v2
 
-    steps:
-    - uses: actions/checkout@v3
-      
-    - name: Add msbuild to PATH
-      uses: microsoft/setup-msbuild@v2
-      
-    - name: Run msbuild
-      run: msbuild TrafficMonitor_Lite.sln -p:configuration="Release (lite)" -p:platform=x86 -p:platformToolset=v143
-      
-    - name: Get current time
-      uses: josStorer/get-current-time@v2.0.2
-      id: current-time
-      with:
-        format: YYYYMMDD_HHmmss
-        utcOffset: "+08:00"
-      
-    - name : Upload artifact
-      uses: actions/upload-artifact@v4
-      with:
-        name: x86_${{ steps.current-time.outputs.formattedTime }}_TrafficMonitor
-        path: |
-          Bin/Release (lite)/TrafficMonitor.exe
-          Bin/Release (lite)/*.dll
-      
-    - name : Upload pdb files
-      uses: actions/upload-artifact@v4
-      with:
-        name: x86_${{ steps.current-time.outputs.formattedTime }}_pdb
-        path: Bin/Release (lite)/*.pdb
+      - name: Build Lite edition
+        shell: pwsh
+        run: |
+          msbuild TrafficMonitor_Lite.sln `
+            /m `
+            /t:Build `
+            /p:Configuration="Release (lite)" `
+            /p:Platform="${{ matrix.platform }}" `
+            /p:PlatformToolset=v143
 
-  arm64ec_build:
-    runs-on: windows-latest
+      - name: Verify build outputs
+        shell: pwsh
+        env:
+          OUTPUT_DIR: ${{ matrix.output_dir }}
+        run: |
+          $executable = Join-Path $env:OUTPUT_DIR 'TrafficMonitor.exe'
+          if (!(Test-Path -LiteralPath $executable)) {
+            throw "Expected build output was not found: $executable"
+          }
+          $versionInfo = [Diagnostics.FileVersionInfo]::GetVersionInfo($executable)
+          if ($versionInfo.FileVersion -ne $env:TRAFFICMONITOR_PE_VERSION -or
+              $versionInfo.ProductVersion -ne $env:TRAFFICMONITOR_PE_VERSION) {
+            throw "Built executable version '$($versionInfo.FileVersion)' does not match '$env:TRAFFICMONITOR_PE_VERSION'."
+          }
+          "Built $executable with version ${{ needs.prepare.outputs.version }}" >> $env:GITHUB_STEP_SUMMARY
 
-    steps:
-    - uses: actions/checkout@v3
-      
-    - name: Add msbuild to PATH
-      uses: microsoft/setup-msbuild@v2
-      
-    - name: Run msbuild
-      run: msbuild TrafficMonitor_Lite.sln -p:configuration="Release (lite)" -p:platform=ARM64EC -p:platformToolset=v143
-      
-    - name: Get current time
-      uses: josStorer/get-current-time@v2.0.2
-      id: current-time
-      with:
-        format: YYYYMMDD_HHmmss
-        utcOffset: "+08:00"
+      - name: Upload program files
+        uses: actions/upload-artifact@v4
+        with:
+          name: TrafficMonitor_${{ needs.prepare.outputs.version }}_${{ matrix.name }}_Lite_run-${{ github.run_number }}-${{ github.run_attempt }}
+          if-no-files-found: error
+          path: |
+            ${{ matrix.output_dir }}/TrafficMonitor.exe
+            ${{ matrix.output_dir }}/*.dll
 
-    # - name: Move dll file path 
-    #   run: mv Bin/x64/Release/*.dll  Bin/ARM64EC/Release/
-
-    - name : Upload artifact
-      uses: actions/upload-artifact@v4
-      with:
-        name: arm64EC_${{ steps.current-time.outputs.formattedTime }}_TrafficMonitor
-        path: |
-          Bin/ARM64EC/Release (lite)/TrafficMonitor.exe
-          Bin/ARM64EC/Release (lite)/*.dll
-
-    - name : Upload pdb files
-      uses: actions/upload-artifact@v4
-      with:
-        name: arm64EC_${{ steps.current-time.outputs.formattedTime }}_pdb
-        path: Bin/ARM64EC/Release (lite)/*.pdb
+      - name: Upload debug symbols
+        uses: actions/upload-artifact@v4
+        with:
+          name: TrafficMonitor_${{ needs.prepare.outputs.version }}_${{ matrix.name }}_Lite_pdb_run-${{ github.run_number }}-${{ github.run_attempt }}
+          if-no-files-found: error
+          path: ${{ matrix.output_dir }}/*.pdb
