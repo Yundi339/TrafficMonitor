@@ -586,30 +586,37 @@ void CTaskBarDlgDrawCommonWindowSupport::RequestD3D10Device1Recreate()
 
 void CTaskBarDlgDrawCommonWindowSupport::CDWriteHelper::SetFont(HFONT h_font)
 {
-    if (m_h_last_font != h_font)
-    {
-        ::GetObject(h_font, sizeof(m_last_font), &m_last_font);
+    LOGFONTW current_font{};
+    const int log_font_size = static_cast<int>(sizeof(current_font));
+    if (h_font == nullptr || ::GetObjectW(h_font, log_font_size, &current_font) != log_font_size)
+        return;
 
-        auto abs_font_height_f =
-            static_cast<float>(std::abs(m_last_font.lfHeight));
-        auto dwrite_font_weight =
-            static_cast<DWRITE_FONT_WEIGHT>(m_last_font.lfWeight);
-        auto dwrite_font_style =
-            m_last_font.lfItalic ? DWRITE_FONT_STYLE_ITALIC : DWRITE_FONT_STYLE_NORMAL;
-        ThrowIfFailed<CDWriteException>(
-            CDWriteSupport::GetFactory()->CreateTextFormat(
-                theApp.m_taskbar_data.font.name,
-                NULL,
-                dwrite_font_weight,
-                dwrite_font_style,
-                DWRITE_FONT_STRETCH_NORMAL,
-                abs_font_height_f,
-                L"",
-                &m_p_text_format),
-            TRAFFICMONITOR_ERROR_STR("Create D2D1 Text Format failed."));
+    // GDI may reuse the same HFONT value after the old font is deleted. Compare the
+    // actual font attributes so a DPI-driven font recreation cannot leave DWrite
+    // using the previous monitor's text size.
+    const bool font_changed = !m_p_text_format || std::memcmp(&m_last_font, &current_font, sizeof(current_font)) != 0;
+    m_h_last_font = h_font;
+    if (!font_changed)
+        return;
 
-        m_h_last_font = h_font;
-    }
+    auto abs_font_height_f =
+        static_cast<float>(std::abs(current_font.lfHeight));
+    auto dwrite_font_weight =
+        static_cast<DWRITE_FONT_WEIGHT>(current_font.lfWeight);
+    auto dwrite_font_style =
+        current_font.lfItalic ? DWRITE_FONT_STYLE_ITALIC : DWRITE_FONT_STYLE_NORMAL;
+    ThrowIfFailed<CDWriteException>(
+        CDWriteSupport::GetFactory()->CreateTextFormat(
+            theApp.m_taskbar_data.font.name,
+            NULL,
+            dwrite_font_weight,
+            dwrite_font_style,
+            DWRITE_FONT_STRETCH_NORMAL,
+            abs_font_height_f,
+            L"",
+            &m_p_text_format),
+        TRAFFICMONITOR_ERROR_STR("Create D2D1 Text Format failed."));
+    m_last_font = current_font;
 }
 
 auto CTaskBarDlgDrawCommonWindowSupport::CDWriteHelper::GetFont() noexcept
