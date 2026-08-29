@@ -630,6 +630,14 @@ HWND CTaskBarDlg::FindTaskbarHandle(bool& is_scendary_display)
     return hTaskbar;
 }
 
+bool CTaskBarDlg::IsTaskbarHandleChanged()
+{
+    bool is_secondary_display = false;
+    HWND current_taskbar = FindTaskbarHandle(is_secondary_display);
+    return current_taskbar == nullptr || current_taskbar != m_hTaskbar
+        || is_secondary_display != m_is_secondary_display || !::IsWindow(m_hTaskbar);
+}
+
 CString CTaskBarDlg::GetMouseTipsInfo()
 {
     CString tip_info;
@@ -1073,8 +1081,10 @@ void CTaskBarDlg::OnCancel()
         }
     }
 
+    const bool taskbar_structure_changed = IsTaskbarStructureChanged();
     DestroyWindow();
-    ResetTaskbarPos();
+    if (!taskbar_structure_changed)
+        ResetTaskbarPos();
 
     //CDialogEx::OnCancel();
 }

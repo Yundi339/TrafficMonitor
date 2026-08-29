@@ -32,3 +32,8 @@ HWND CWineTaskbarDlg::GetParentHwnd()
 {
     return GetDesktopWindow()->GetSafeHwnd();
 }
+
+bool CWineTaskbarDlg::IsTaskbarStructureChanged()
+{
+    return false;
+}

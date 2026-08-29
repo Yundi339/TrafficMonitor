@@ -11,6 +11,7 @@ private:
     virtual void AdjustTaskbarWndPos(bool force_adjust) override;
     void ResetTaskbarPos() override;
     virtual HWND GetParentHwnd() override;
+    bool IsTaskbarStructureChanged() override;
 
     HWND m_hNotify;     //任务栏通知区域的句柄
     HWND m_hStart;      //开始按钮的句柄

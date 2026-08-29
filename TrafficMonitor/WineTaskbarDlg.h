@@ -10,5 +10,6 @@ private:
     void ResetTaskbarPos() override;
     void CheckTaskbarOnTopOrBottom() override;
     HWND GetParentHwnd() override;
+    bool IsTaskbarStructureChanged() override;
 };
 

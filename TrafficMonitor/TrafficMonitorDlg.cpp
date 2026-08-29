@@ -607,6 +607,27 @@ void CTrafficMonitorDlg::OpenTaskBarWnd()
     //IniTaskBarConnectionMenu();
 }
 
+void CTrafficMonitorDlg::ScheduleTaskbarWndReopen(UINT delay_ms)
+{
+    if (m_taskbar_reopen_pending || !theApp.m_cfg_data.m_show_task_bar_wnd)
+        return;
+
+    m_taskbar_reopen_pending = true;
+    KillTimer(RESTART_TASKBAR_TIMER);
+    if (SetTimer(RESTART_TASKBAR_TIMER, delay_ms, [](HWND, UINT, UINT_PTR, DWORD) {
+        CTrafficMonitorDlg* pThis = CTrafficMonitorDlg::Instance();
+        if (pThis != nullptr && ::IsWindow(pThis->GetSafeHwnd()))
+        {
+            pThis->KillTimer(RESTART_TASKBAR_TIMER);
+            pThis->m_taskbar_reopen_pending = false;
+            pThis->SendMessage(WM_REOPEN_TASKBAR_WND);
+        }
+    }) == 0)
+    {
+        m_taskbar_reopen_pending = false;
+    }
+}
+
 void CTrafficMonitorDlg::AddNotifyIcon()
 {
     if (theApp.m_cfg_data.m_show_task_bar_wnd)
@@ -1984,24 +2005,25 @@ void CTrafficMonitorDlg::OnTimer(UINT_PTR nIDEvent)
     if (nIDEvent == TASKBAR_TIMER)
     {
         ++m_taskbar_timer_cnt;
-        if (m_taskbar_timer_cnt % 5 == 0 && theApp.m_cfg_data.m_show_task_bar_wnd && theApp.m_taskbar_data.show_taskbar_wnd_in_secondary_display)
+        if (m_taskbar_timer_cnt % 5 == 0 && theApp.m_cfg_data.m_show_task_bar_wnd)
         {
-            static int last_taskbar_num = 0;
-            int taskbar_num = CTaskbarHelper::GetSecondaryTaskbarNum();
-            //如果副显示器的任务栏数量发生变化，则重启任务栏窗口
-            if (last_taskbar_num != taskbar_num)
+            bool taskbar_structure_changed = IsTaskbarWndValid() && m_tBarDlg->IsTaskbarStructureChanged();
+            static int last_taskbar_num = -1;
+            if (theApp.m_taskbar_data.show_taskbar_wnd_in_secondary_display)
             {
+                int taskbar_num = CTaskbarHelper::GetSecondaryTaskbarNum();
+                if (last_taskbar_num >= 0 && last_taskbar_num != taskbar_num)
+                    taskbar_structure_changed = true;
                 last_taskbar_num = taskbar_num;
-                //延迟一段时间后重启任务栏窗口
-                KillTimer(RESTART_TASKBAR_TIMER);
-                SetTimer(RESTART_TASKBAR_TIMER, 500, [](HWND, UINT, UINT_PTR, DWORD) {
-                    theApp.m_pMainWnd->SendMessage(WM_REOPEN_TASKBAR_WND);
-                    ::KillTimer(theApp.m_pMainWnd->GetSafeHwnd(), RESTART_TASKBAR_TIMER);
-                });
             }
+            else
+                last_taskbar_num = -1;
+
+            if (taskbar_structure_changed)
+                ScheduleTaskbarWndReopen();
         }
 
-        if (IsTaskbarWndValid())
+        if (IsTaskbarWndValid() && !m_taskbar_reopen_pending)
         {
             //启动时就隐藏主窗体的情况下，无法收到dpichange消息，故需要手动检查
             //每次100ms*10执行一次屏幕DPI检查，并且尽可能少的检查操作系统版本
@@ -2907,6 +2929,7 @@ LRESULT CTrafficMonitorDlg::OnDisplaychange(WPARAM wParam, LPARAM lParam)
 {
     GetScreenSize();
     CheckWindowPos(true);
+    ScheduleTaskbarWndReopen(800);
     return 0;
 }
 
@@ -2929,6 +2952,7 @@ void CTrafficMonitorDlg::OnPluginManage()
 
 LRESULT CTrafficMonitorDlg::OnReopenTaksbarWnd(WPARAM wParam, LPARAM lParam)
 {
+    m_taskbar_reopen_pending = false;
     CloseTaskBarWnd();
     OpenTaskBarWnd();
     return 0;
