@@ -6,7 +6,7 @@ public:
 	CHistoryTrafficFile(const wstring& file_path);
 	~CHistoryTrafficFile();
 
-	void Save() const;
+	bool Save() const;
 	bool SaveTodayOnly() const;	// 将当天记录保存到小型检查点文件
 	void Load();
 	void LoadSize();			//仅读取文件的大小

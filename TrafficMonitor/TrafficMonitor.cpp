@@ -137,7 +137,7 @@ void CTrafficMonitorApp::LoadConfig()
     m_main_wnd_data.memory_display = static_cast<MemoryDisplay>(ini.GetInt(L"config", L"memory_display", static_cast<int>(MemoryDisplay::USAGE_PERCENTAGE)));
     m_main_wnd_data.unit_byte = ini.GetBool(_T("config"), _T("unit_byte"), true);
     m_main_wnd_data.speed_unit = static_cast<SpeedUnit>(ini.GetInt(_T("config"), _T("speed_unit"), 0));
-    m_main_wnd_data.cpu_freq_unit = static_cast<CpuFreqUnit>(ini.GetInt(_T("config"), _T("cpu_freq_unit"), static_cast<int>(CpuFreqUnit::GHZ)));
+    m_main_wnd_data.cpu_freq_unit = NormalizeCpuFreqUnit(ini.GetInt(_T("config"), _T("cpu_freq_unit"), static_cast<int>(CpuFreqUnit::GHZ)));
     m_main_wnd_data.hide_unit = ini.GetBool(_T("config"), _T("hide_unit"), false);
     m_main_wnd_data.hide_percent = ini.GetBool(_T("config"), _T("hide_percent"), false);
     m_main_wnd_data.double_click_action = static_cast<DoubleClickAction>(ini.GetInt(_T("config"), _T("double_click_action"), 0));
@@ -220,7 +220,7 @@ void CTrafficMonitorApp::LoadConfig()
     m_taskbar_data.tbar_wnd_snap = ini.GetBool(_T("task_bar"), _T("task_bar_wnd_snap"), false);
     m_taskbar_data.unit_byte = ini.GetBool(_T("task_bar"), _T("unit_byte"), true);
     m_taskbar_data.speed_unit = static_cast<SpeedUnit>(ini.GetInt(_T("task_bar"), _T("task_bar_speed_unit"), 0));
-    m_taskbar_data.cpu_freq_unit = static_cast<CpuFreqUnit>(ini.GetInt(_T("task_bar"), _T("cpu_freq_unit"), static_cast<int>(CpuFreqUnit::GHZ)));
+    m_taskbar_data.cpu_freq_unit = NormalizeCpuFreqUnit(ini.GetInt(_T("task_bar"), _T("cpu_freq_unit"), static_cast<int>(CpuFreqUnit::GHZ)));
     m_taskbar_data.hide_unit = ini.GetBool(_T("task_bar"), _T("task_bar_hide_unit"), false);
     m_taskbar_data.hide_percent = ini.GetBool(_T("task_bar"), _T("task_bar_hide_percent"), false);
     m_taskbar_data.value_right_align = ini.GetBool(_T("task_bar"), _T("value_right_align"), true);

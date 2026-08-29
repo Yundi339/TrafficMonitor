@@ -172,7 +172,7 @@ protected:
     void UpdateNotifyIconTip();     //更新通知区图标的鼠标提示
 
     bool SaveHistoryTraffic();        // 保存当天流量检查点
-    void SaveHistoryTrafficFull();    // 完整保存，用于程序退出时确保所有数据都保存
+    bool SaveHistoryTrafficFull();    // 完整保存，用于程序退出时确保所有数据都保存
     void LoadHistoryTraffic();
     void BackupHistoryTrafficFile();
 

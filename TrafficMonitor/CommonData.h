@@ -53,6 +53,11 @@ enum class CpuFreqUnit
     G           //G
 };
 
+inline CpuFreqUnit NormalizeCpuFreqUnit(int value)
+{
+    return value == static_cast<int>(CpuFreqUnit::G) ? CpuFreqUnit::G : CpuFreqUnit::GHZ;
+}
+
 
 //硬件监控的项目
 enum HardwareItem

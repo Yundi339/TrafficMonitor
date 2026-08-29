@@ -97,9 +97,9 @@ void CHistoryTrafficFile::UpdateCache() const
 	m_cache_dirty = false; // 标记缓存已更新
 }
 
-void CHistoryTrafficFile::Save() const
+bool CHistoryTrafficFile::Save() const
 {
-	WriteFileAtomically(m_file_path, [this](ofstream& file) {
+	return WriteFileAtomically(m_file_path, [this](ofstream& file) {
 		char buff[64];
 		size_t total_size = 1 + m_history_traffics.size();
 		sprintf_s(buff, "lines: \"%u\"", static_cast<unsigned int>(total_size));

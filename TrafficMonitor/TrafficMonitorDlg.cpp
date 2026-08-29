@@ -695,10 +695,9 @@ bool CTrafficMonitorDlg::SaveHistoryTraffic()
     return m_history_traffic.SaveTodayOnly();
 }
 
-void CTrafficMonitorDlg::SaveHistoryTrafficFull()
+bool CTrafficMonitorDlg::SaveHistoryTrafficFull()
 {
-    // 完整保存，用于程序退出时确保所有数据都保存
-    m_history_traffic.Save();
+    return m_history_traffic.Save();
 }
 
 void CTrafficMonitorDlg::LoadHistoryTraffic()
@@ -1302,14 +1301,15 @@ void CTrafficMonitorDlg::DoMonitorAcquisition()
     static int last_check_day = -1;
     static unsigned __int64 last_checkpoint_kbytes = 0;
     static bool checkpoint_initialized = false;
+    static bool full_save_pending = false;
     const HistoryTraffic& today_traffic = m_history_traffic.GetTodayTraffic();
     if (today_traffic.year != current_time.wYear || today_traffic.month != current_time.wMonth || today_traffic.day != current_time.wDay)
     {
         m_history_traffic.OnDateChanged();
         theApp.m_today_up_traffic = 0;
         theApp.m_today_down_traffic = 0;
-        SaveHistoryTrafficFull();
-        checkpoint_initialized = SaveHistoryTraffic();
+        full_save_pending = !SaveHistoryTrafficFull();
+        checkpoint_initialized = !full_save_pending && SaveHistoryTraffic();
         last_check_day = current_time.wDay;
         last_checkpoint_kbytes = 0;
     }
@@ -1329,7 +1329,17 @@ void CTrafficMonitorDlg::DoMonitorAcquisition()
             last_check_day = current_time.wDay;
         }
 
-        if (!checkpoint_initialized || current_kbytes != last_checkpoint_kbytes)
+        if (full_save_pending)
+        {
+            if (SaveHistoryTrafficFull())
+            {
+                full_save_pending = false;
+                checkpoint_initialized = SaveHistoryTraffic();
+                if (checkpoint_initialized)
+                    last_checkpoint_kbytes = current_kbytes;
+            }
+        }
+        else if (!checkpoint_initialized || current_kbytes != last_checkpoint_kbytes)
         {
             if (SaveHistoryTraffic())
             {
@@ -2183,8 +2193,8 @@ void CTrafficMonitorDlg::OnClose()
     theApp.m_cannot_save_global_config_warning = true;
     theApp.SaveConfig();    //退出前保存设置到ini文件
     theApp.SaveGlobalConfig();
-    SaveHistoryTrafficFull();  // 退出时使用完整保存，确保所有数据都保存
-    BackupHistoryTrafficFile();
+    if (SaveHistoryTrafficFull())  // 退出时使用完整保存，确保所有数据都保存
+        BackupHistoryTrafficFile();
 
     if (IsTaskbarWndValid())
         m_tBarDlg->OnCancel();
@@ -2802,8 +2812,8 @@ BOOL CTrafficMonitorDlg::OnQueryEndSession()
     // TODO:  在此添加专用的查询结束会话代码
     theApp.SaveConfig();
     theApp.SaveGlobalConfig();
-    SaveHistoryTrafficFull();  // 系统关机时使用完整保存，确保所有数据都保存
-    BackupHistoryTrafficFile();
+    if (SaveHistoryTrafficFull())  // 系统关机时使用完整保存，确保所有数据都保存
+        BackupHistoryTrafficFile();
 
     if (theApp.m_debug_log)
     {
