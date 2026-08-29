@@ -17,11 +17,11 @@ permissions:
 jobs:
   prepare:
     name: Resolve build version
-    runs-on: windows-latest
+    runs-on: windows-2022
     outputs:
       version: ${{ steps.version.outputs.version }}
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
 
       - name: Resolve and validate version
         id: version
@@ -43,7 +43,7 @@ jobs:
   build:
     name: Build ${{ matrix.name }}
     needs: prepare
-    runs-on: windows-latest
+    runs-on: windows-2022
     strategy:
       fail-fast: false
       matrix:
@@ -59,7 +59,7 @@ jobs:
             output_dir: Bin/ARM64EC/Release (lite)
 
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
 
       - name: Stamp build version
         shell: pwsh
@@ -69,7 +69,7 @@ jobs:
           & .\.github\scripts\Set-ProjectVersion.ps1 -Version $env:BUILD_VERSION
 
       - name: Add MSBuild to PATH
-        uses: microsoft/setup-msbuild@v2
+        uses: microsoft/setup-msbuild@v3
 
       - name: Build Lite edition
         shell: pwsh
@@ -98,7 +98,7 @@ jobs:
           "Built $executable with version ${{ needs.prepare.outputs.version }}" >> $env:GITHUB_STEP_SUMMARY
 
       - name: Upload program files
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@v7
         with:
           name: TrafficMonitor_${{ needs.prepare.outputs.version }}_${{ matrix.name }}_Lite_run-${{ github.run_number }}-${{ github.run_attempt }}
           if-no-files-found: error
@@ -107,7 +107,7 @@ jobs:
             ${{ matrix.output_dir }}/*.dll
 
       - name: Upload debug symbols
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@v7
         with:
           name: TrafficMonitor_${{ needs.prepare.outputs.version }}_${{ matrix.name }}_Lite_pdb_run-${{ github.run_number }}-${{ github.run_attempt }}
           if-no-files-found: error
