@@ -2954,7 +2954,8 @@ LRESULT CTrafficMonitorDlg::OnReopenTaksbarWnd(WPARAM wParam, LPARAM lParam)
 {
     m_taskbar_reopen_pending = false;
     CloseTaskBarWnd();
-    OpenTaskBarWnd();
+    if (theApp.m_cfg_data.m_show_task_bar_wnd)
+        OpenTaskBarWnd();
     return 0;
 }
 
