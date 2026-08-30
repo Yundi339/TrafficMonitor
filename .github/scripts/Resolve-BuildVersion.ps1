@@ -3,7 +3,7 @@ param(
     [string]$RequestedVersion = '',
     [string]$EventName = '',
     [string]$RefName = '',
-    [int]$RunNumber = 0,
+    [uint64]$RunNumber = 0,
     [string]$HeaderPath = ''
 )
 
@@ -45,12 +45,30 @@ if ([string]::IsNullOrWhiteSpace($version)) {
         throw "Could not read the base version from '$HeaderPath'."
     }
 
+    $baseVersion = $match.Groups['version'].Value
+    Assert-Version $baseVersion
+
     $components = [Collections.Generic.List[string]]::new()
-    $components.AddRange([string[]]$match.Groups['version'].Value.Split('.'))
+    $components.AddRange([string[]]$baseVersion.Split('.'))
     if ($components.Count -eq 3) {
         $components.RemoveAt(2)
     }
-    $components.Add($RunNumber.ToString([Globalization.CultureInfo]::InvariantCulture))
+
+    # Preserve the complete run number across the PE major/build components.
+    # Build values are 1..65535; after that range is exhausted, major advances.
+    $baseMajor = [uint64]::Parse($components[0], [Globalization.CultureInfo]::InvariantCulture)
+    $buildRange = [uint64]65535
+    $maximumRunNumber = ([uint64]65536 - $baseMajor) * $buildRange
+    if ($RunNumber -gt $maximumRunNumber) {
+        throw "RunNumber '$RunNumber' cannot be represented without exceeding the PE version limit."
+    }
+
+    $remainder = [long]0
+    $majorIncrement = [Math]::DivRem([long]($RunNumber - 1), [long]$buildRange, [ref]$remainder)
+    $major = $baseMajor + [uint64]$majorIncrement
+    $build = [uint64]$remainder + 1
+    $components[0] = $major.ToString([Globalization.CultureInfo]::InvariantCulture)
+    $components.Add($build.ToString([Globalization.CultureInfo]::InvariantCulture))
     $version = $components -join '.'
 }
 

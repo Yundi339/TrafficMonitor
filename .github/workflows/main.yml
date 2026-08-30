@@ -36,9 +36,42 @@ jobs:
             -RequestedVersion $env:REQUESTED_VERSION `
             -EventName $env:EVENT_NAME `
             -RefName $env:REF_NAME `
-            -RunNumber ([int]$env:RUN_NUMBER)
+            -RunNumber ([uint64]$env:RUN_NUMBER)
           "version=$version" >> $env:GITHUB_OUTPUT
           "## Build version: $version" >> $env:GITHUB_STEP_SUMMARY
+
+      - name: Validate version resolver boundaries
+        shell: pwsh
+        run: |
+          $beforeBoundary = & .\.github\scripts\Resolve-BuildVersion.ps1 -RunNumber 65535
+          $atBoundary = & .\.github\scripts\Resolve-BuildVersion.ps1 -RunNumber 65536
+          $beforeParts = $beforeBoundary.Split('.')
+          $boundaryParts = $atBoundary.Split('.')
+          if ($beforeParts[-1] -ne '65535' -or
+              [uint64]$boundaryParts[0] -ne ([uint64]$beforeParts[0] + 1) -or
+              $boundaryParts[1] -ne $beforeParts[1] -or
+              $boundaryParts[-1] -ne '1') {
+            throw "Automatic version rollover is invalid: '$beforeBoundary' -> '$atBoundary'."
+          }
+
+          $requested = & .\.github\scripts\Resolve-BuildVersion.ps1 `
+            -RequestedVersion '7.89.65535' `
+            -RunNumber ([uint64]::MaxValue)
+          if ($requested -ne '7.89.65535') {
+            throw "An explicit version was unexpectedly changed to '$requested'."
+          }
+
+          $invalidRejected = $false
+          try {
+            & .\.github\scripts\Resolve-BuildVersion.ps1 `
+              -RequestedVersion '7.89.65536' `
+              -RunNumber 1 | Out-Null
+          } catch {
+            $invalidRejected = $true
+          }
+          if (!$invalidRejected) {
+            throw 'An invalid explicit version was accepted.'
+          }
 
   build:
     name: Build ${{ matrix.name }}
@@ -102,9 +135,7 @@ jobs:
         with:
           name: TrafficMonitor_${{ needs.prepare.outputs.version }}_${{ matrix.name }}_Lite_run-${{ github.run_number }}-${{ github.run_attempt }}
           if-no-files-found: error
-          path: |
-            ${{ matrix.output_dir }}/TrafficMonitor.exe
-            ${{ matrix.output_dir }}/*.dll
+          path: ${{ matrix.output_dir }}/TrafficMonitor.exe
 
       - name: Upload debug symbols
         uses: actions/upload-artifact@v7
