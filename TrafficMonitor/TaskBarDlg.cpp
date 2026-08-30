@@ -1081,10 +1081,8 @@ void CTaskBarDlg::OnCancel()
         }
     }
 
-    const bool taskbar_structure_changed = IsTaskbarStructureChanged();
     DestroyWindow();
-    if (!taskbar_structure_changed)
-        ResetTaskbarPos();
+    ResetTaskbarPos();
 
     //CDialogEx::OnCancel();
 }
