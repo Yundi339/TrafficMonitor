@@ -157,6 +157,7 @@ protected:
 
     struct ConnectionAcquisitionState
     {
+        bool initialized{};
         vector<NetWorkConection> connections;
         int selected{};
         bool select_all{};
