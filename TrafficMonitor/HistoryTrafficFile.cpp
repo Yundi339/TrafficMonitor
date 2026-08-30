@@ -422,7 +422,8 @@ bool CHistoryTrafficFile::Load()
 		&& records_in_descending_order
 		&& !is_first_data_line
 		&& parsed_record_count == 1 + m_history_traffics.size()
-		&& HistoryTraffic::DateEqual(m_today_traffic, CreateTodayTraffic());
+		&& HistoryTraffic::DateEqual(m_today_traffic, CreateTodayTraffic())
+		&& !m_today_traffic.mixed;
 	if (canonical_snapshot)
 		RefreshDerivedData();
 	else
