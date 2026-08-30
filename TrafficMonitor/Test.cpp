@@ -227,11 +227,25 @@ static void TestHistoryTrafficPersistence()
     ASSERT(snapshot_lines.size() == 4);
 
     vector<string> corrupted_lines = snapshot_lines;
-    corrupted_lines[1] = MakeTrafficRecord(today, 12, 22);
+    corrupted_lines[1] = MakeTrafficRecord(today, 999999, 22);
     WriteHistoryFixture(file_path, corrupted_lines, false);
     CHistoryTrafficFile corrupted_snapshot(file_path);
     corrupted_snapshot.Load();
     ASSERT(!corrupted_snapshot.IsSnapshotValid());
+
+    WriteValidatedHistoryFixture(backup_path,
+        { MakeTrafficRecord(today, 50, 60), MakeTrafficRecord(previous_day, 70, 80) });
+    WriteHistoryFixture(checkpoint_path, { MakeTrafficRecord(today, 75, 65) }, false);
+    CHistoryTrafficFile validated_backup(backup_path);
+    validated_backup.Load();
+    ASSERT(validated_backup.IsSnapshotValid());
+    ASSERT(corrupted_snapshot.RestoreFromValidatedSnapshot(validated_backup) == 2);
+    ASSERT(corrupted_snapshot.GetTodayTraffic().up_kBytes == 75);
+    ASSERT(corrupted_snapshot.GetTodayTraffic().down_kBytes == 65);
+    ASSERT(corrupted_snapshot.GetHistoryTraffics().front().up_kBytes == 70);
+    ASSERT(corrupted_snapshot.GetHistoryTraffics().front().down_kBytes == 80);
+    DeleteFileW(checkpoint_path.c_str());
+    DeleteFileW(backup_path.c_str());
 
     vector<string> wrong_count_lines = snapshot_lines;
     wrong_count_lines[0] = "lines: \"3\"";

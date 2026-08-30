@@ -842,7 +842,9 @@ void CTrafficMonitorDlg::LoadHistoryTraffic()
         CHistoryTrafficFile backup_file(theApp.m_history_traffic_path + L".bak");
         backup_file.Load();
         size_before = m_history_traffic.Size();
-        recovered_count = m_history_traffic.Merge(backup_file, true);
+        recovered_count = backup_file.IsSnapshotValid()
+            ? m_history_traffic.RestoreFromValidatedSnapshot(backup_file)
+            : m_history_traffic.Merge(backup_file, true);
         full_save_required = true;
     }
 

@@ -31,6 +31,7 @@ public:
 	bool IsBackupRecoveryRequired() const { return !m_snapshot_valid; }
 	bool IsSnapshotValid() const { return m_snapshot_valid; }
 	size_t Merge(const CHistoryTrafficFile& history_traffic, bool prefer_larger_value = false);
+	size_t RestoreFromValidatedSnapshot(const CHistoryTrafficFile& history_traffic);
 	void OnDateChanged();		//日期改变时调用，将今天的记录移到历史记录，创建新的今天的记录
 
 	const wstring& GetFilePath() const { return m_file_path; }

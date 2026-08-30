@@ -506,6 +506,30 @@ size_t CHistoryTrafficFile::Merge(const CHistoryTrafficFile& history_traffic, bo
 	return changed_records;
 }
 
+size_t CHistoryTrafficFile::RestoreFromValidatedSnapshot(const CHistoryTrafficFile& history_traffic)
+{
+	if (!history_traffic.m_snapshot_valid)
+		return 0;
+
+	m_today_traffic = history_traffic.m_today_traffic;
+	m_history_traffics = history_traffic.m_history_traffics;
+	m_checkpoint_full_save_required = false;
+	m_snapshot_valid = false;
+	m_snapshot_rewrite_required = true;
+	RefreshDerivedData();
+	size_t restored_records = m_history_traffics.size() + (HasTraffic(m_today_traffic) ? 1 : 0);
+	if (RecoverFromCheckpoint())
+	{
+		if (m_checkpoint_full_save_required)
+			MormalizeData();
+		else
+			RefreshDerivedData();
+		if (restored_records == 0)
+			restored_records = 1;
+	}
+	return restored_records;
+}
+
 void CHistoryTrafficFile::OnDateChanged()
 {
 	// 日期改变时，将今天的记录移到历史记录链表的前面，然后创建新的今天的记录
