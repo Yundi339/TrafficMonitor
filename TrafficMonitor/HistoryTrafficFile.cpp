@@ -43,7 +43,7 @@ namespace
 	}
 
 	template<typename Writer>
-	bool WriteFileAtomically(const wstring& file_path, Writer writer)
+	bool WriteFileAtomically(const wstring& file_path, Writer writer, bool durable, const wstring& backup_path = L"")
 	{
 		const wstring temp_path = file_path + L".tmp";
 		DeleteFileW(temp_path.c_str());
@@ -63,28 +63,69 @@ namespace
 			return false;
 		}
 
-		HANDLE file_handle = CreateFileW(temp_path.c_str(), GENERIC_WRITE, FILE_SHARE_READ, nullptr,
-			OPEN_EXISTING, FILE_ATTRIBUTE_NORMAL, nullptr);
-		if (file_handle == INVALID_HANDLE_VALUE)
+		if (durable)
 		{
-			DeleteFileW(temp_path.c_str());
-			return false;
-		}
-		success = (FlushFileBuffers(file_handle) != FALSE);
-		CloseHandle(file_handle);
-		if (!success)
-		{
-			DeleteFileW(temp_path.c_str());
-			return false;
+			HANDLE file_handle = CreateFileW(temp_path.c_str(), GENERIC_WRITE, FILE_SHARE_READ, nullptr,
+				OPEN_EXISTING, FILE_ATTRIBUTE_NORMAL, nullptr);
+			if (file_handle == INVALID_HANDLE_VALUE)
+			{
+				DeleteFileW(temp_path.c_str());
+				return false;
+			}
+			success = (FlushFileBuffers(file_handle) != FALSE);
+			CloseHandle(file_handle);
+			if (!success)
+			{
+				DeleteFileW(temp_path.c_str());
+				return false;
+			}
 		}
 
-		if (!MoveFileExW(temp_path.c_str(), file_path.c_str(), MOVEFILE_REPLACE_EXISTING | MOVEFILE_WRITE_THROUGH))
+		DWORD move_flags = MOVEFILE_REPLACE_EXISTING;
+		if (durable)
+			move_flags |= MOVEFILE_WRITE_THROUGH;
+		if (!backup_path.empty() && CCommon::FileExist(file_path.c_str())
+			&& !MoveFileExW(file_path.c_str(), backup_path.c_str(), move_flags))
+		{
+			DeleteFileW(temp_path.c_str());
+			return false;
+		}
+		if (!MoveFileExW(temp_path.c_str(), file_path.c_str(), move_flags))
 		{
 			DeleteFileW(temp_path.c_str());
 			return false;
 		}
 		return true;
 	}
+}
+
+void CHistoryTrafficCheckpointSchedule::Reset(unsigned __int64 current_kbytes, ULONGLONG current_tick)
+{
+	m_last_saved_kbytes = current_kbytes;
+	m_last_saved_tick = current_tick;
+	m_initialized = true;
+}
+
+bool CHistoryTrafficCheckpointSchedule::ShouldSave(unsigned __int64 current_kbytes, ULONGLONG current_tick) const
+{
+	if (!m_initialized || current_kbytes == m_last_saved_kbytes)
+		return false;
+
+	const ULONGLONG elapsed = current_tick >= m_last_saved_tick
+		? current_tick - m_last_saved_tick
+		: MAX_INTERVAL_MS;
+	if (elapsed >= MAX_INTERVAL_MS)
+		return true;
+
+	const unsigned __int64 delta = current_kbytes >= m_last_saved_kbytes
+		? current_kbytes - m_last_saved_kbytes
+		: (std::numeric_limits<unsigned __int64>::max)();
+	return elapsed >= MIN_INTERVAL_MS && delta >= TRAFFIC_THRESHOLD_KBYTES;
+}
+
+void CHistoryTrafficCheckpointSchedule::MarkSaved(unsigned __int64 current_kbytes, ULONGLONG current_tick)
+{
+	Reset(current_kbytes, current_tick);
 }
 
 CHistoryTrafficFile::CHistoryTrafficFile(const wstring& file_path)
@@ -135,7 +176,7 @@ void CHistoryTrafficFile::UpdateCache() const
 	m_cache_dirty = false; // 标记缓存已更新
 }
 
-bool CHistoryTrafficFile::SaveToFile(const wstring& file_path) const
+bool CHistoryTrafficFile::SaveToFile(const wstring& file_path, const wstring& backup_path) const
 {
 	return WriteFileAtomically(file_path, [this](ofstream& file) {
 		char buff[64];
@@ -145,17 +186,12 @@ bool CHistoryTrafficFile::SaveToFile(const wstring& file_path) const
 		WriteTrafficRecord(file, m_today_traffic);
 		for (const auto& history_traffic : m_history_traffics)
 			WriteTrafficRecord(file, history_traffic);
-	});
+	}, true, backup_path);
 }
 
-bool CHistoryTrafficFile::Save() const
+bool CHistoryTrafficFile::Save(bool rotate_backup) const
 {
-	return SaveToFile(m_file_path);
-}
-
-bool CHistoryTrafficFile::SaveBackup() const
-{
-	return SaveToFile(GetBackupPath());
+	return SaveToFile(m_file_path, rotate_backup ? GetBackupPath() : L"");
 }
 
 bool CHistoryTrafficFile::IsTodayRecord() const
@@ -169,14 +205,14 @@ bool CHistoryTrafficFile::IsTodayRecord() const
 			m_today_traffic.day == current_time.wDay);
 }
 
-bool CHistoryTrafficFile::SaveTodayOnly() const
+bool CHistoryTrafficFile::SaveTodayOnly(bool durable) const
 {
 	if (!IsTodayRecord())
 		return false;
 
 	return WriteFileAtomically(GetCheckpointPath(), [this](ofstream& file) {
 		WriteTrafficRecord(file, m_today_traffic);
-	});
+	}, durable);
 }
 
 bool CHistoryTrafficFile::ParseTrafficRecord(const string& line, HistoryTraffic& traffic) const
@@ -234,6 +270,7 @@ bool CHistoryTrafficFile::RecoverFromCheckpoint()
 		return false;
 
 	HistoryTraffic* target = nullptr;
+	bool recovered = false;
 	if (HistoryTraffic::DateEqual(checkpoint, m_today_traffic))
 	{
 		target = &m_today_traffic;
@@ -245,18 +282,24 @@ bool CHistoryTrafficFile::RecoverFromCheckpoint()
 		if (iter == m_history_traffics.end())
 		{
 			m_history_traffics.push_back(checkpoint);
-			return true;
+			recovered = true;
 		}
-		target = &(*iter);
+		else
+			target = &(*iter);
 	}
 
-	return MergeTrafficRecord(*target, checkpoint, true);
+	if (target != nullptr)
+		recovered = MergeTrafficRecord(*target, checkpoint, true);
+	if (recovered && !HistoryTraffic::DateEqual(checkpoint, today))
+		m_checkpoint_full_save_required = true;
+	return recovered;
 }
 
 bool CHistoryTrafficFile::Load()
 {
 	m_today_traffic = HistoryTraffic{}; // 初始化今天的记录
 	m_history_traffics.clear(); // 清空历史记录链表
+	m_checkpoint_full_save_required = false;
 	InvalidateCache(); // 标记缓存过期
 
 	ifstream file{ m_file_path };

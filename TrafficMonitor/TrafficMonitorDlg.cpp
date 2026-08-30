@@ -454,7 +454,8 @@ void CTrafficMonitorDlg::IniConnection()
             log_str += (const char*)m_pIfTable->table[i].bDescr;
             log_str += _T("\n");
         }
-        CCommon::WriteLog(log_str, (theApp.m_config_dir + L".\\connections.log").c_str());
+        CCommon::WriteLogRateLimited(log_str, (theApp.m_config_dir + L".\\connections.log").c_str(),
+            _T("connection-list-snapshot"));
     }
 
     //if (m_connection_selected < 0 || m_connection_selected >= m_connections.size() || m_auto_select)
@@ -723,24 +724,34 @@ bool CTrafficMonitorDlg::SaveHistoryTraffic()
     return m_history_traffic.SaveTodayOnly();
 }
 
-bool CTrafficMonitorDlg::SaveHistoryTrafficFull()
+bool CTrafficMonitorDlg::SaveHistoryTrafficFull(bool rotate_backup)
 {
     CSingleLock sync(&m_history_traffic_critical, TRUE);
-    if (!m_history_traffic.Save())
-        return false;
-    m_history_traffic.SaveBackup();
-    return true;
+    return m_history_traffic.Save(rotate_backup);
+}
+
+bool CTrafficMonitorDlg::SaveHistoryTrafficForShutdown()
+{
+    CSingleLock sync(&m_history_traffic_critical, TRUE);
+    if (m_history_full_save_pending)
+        return SaveHistoryTrafficFull(m_history_rotate_backup_on_full_save);
+    if (m_history_traffic.SaveTodayOnly(true))
+        return true;
+
+    m_history_rotate_backup_on_full_save = true;
+    return SaveHistoryTrafficFull(true);
 }
 
 void CTrafficMonitorDlg::LoadHistoryTraffic()
 {
     CSingleLock sync(&m_history_traffic_critical, TRUE);
-    bool recovery_changed = m_history_traffic.Load();
+    m_history_traffic.Load();
+    bool full_save_required = m_history_traffic.IsFullSaveRequiredAfterLoad();
     CHistoryTrafficFile backup_file(theApp.m_history_traffic_path + L".bak");
     backup_file.Load();
     size_t size_before = m_history_traffic.Size();
     size_t recovered_count = m_history_traffic.Merge(backup_file, true);
-    recovery_changed = recovery_changed || recovered_count > 0;
+    full_save_required = full_save_required || recovered_count > 0;
 
     if (recovered_count > 0)
     {
@@ -748,11 +759,18 @@ void CTrafficMonitorDlg::LoadHistoryTraffic()
         CCommon::WriteLog(log_info, theApp.m_log_path.c_str());
     }
 
-    if (recovery_changed)
-        m_history_full_save_pending = !SaveHistoryTrafficFull();
+    if (full_save_required)
+    {
+        //备份参与恢复时保留这份已知良好的备份，不用损坏或不完整的主文件覆盖它。
+        m_history_rotate_backup_on_full_save = recovered_count == 0;
+        m_history_full_save_pending = !SaveHistoryTrafficFull(m_history_rotate_backup_on_full_save);
+    }
 
     theApp.m_today_up_traffic = m_history_traffic.GetTodayUpTraffic();
     theApp.m_today_down_traffic = m_history_traffic.GetTodayDownTraffic();
+    const ULONGLONG current_tick = GetTickCount64();
+    m_history_checkpoint_schedule.Reset(m_history_traffic.GetTodayTraffic().kBytes(), current_tick);
+    m_last_history_full_save_attempt_tick = current_tick;
 }
 
 void CTrafficMonitorDlg::_OnOptions(int tab, CWnd* pParent)
@@ -1305,19 +1323,17 @@ void CTrafficMonitorDlg::DoMonitorAcquisition()
     GetLocalTime(&current_time);
     {
         CSingleLock history_sync(&m_history_traffic_critical, TRUE);
-        static int last_check_day = -1;
-        static unsigned __int64 last_checkpoint_kbytes = 0;
-        static bool checkpoint_initialized = false;
+        const ULONGLONG checkpoint_tick = GetTickCount64();
         const HistoryTraffic& today_traffic = m_history_traffic.GetTodayTraffic();
         if (today_traffic.year != current_time.wYear || today_traffic.month != current_time.wMonth || today_traffic.day != current_time.wDay)
         {
             m_history_traffic.OnDateChanged();
             theApp.m_today_up_traffic = 0;
             theApp.m_today_down_traffic = 0;
-            m_history_full_save_pending = !SaveHistoryTrafficFull();
-            checkpoint_initialized = !m_history_full_save_pending && SaveHistoryTraffic();
-            last_check_day = current_time.wDay;
-            last_checkpoint_kbytes = 0;
+            m_last_history_full_save_attempt_tick = checkpoint_tick;
+            m_history_rotate_backup_on_full_save = true;
+            m_history_full_save_pending = !SaveHistoryTrafficFull(true);
+            m_history_checkpoint_schedule.Reset(0, checkpoint_tick);
         }
 
         //统计今天已使用的流量
@@ -1325,33 +1341,29 @@ void CTrafficMonitorDlg::DoMonitorAcquisition()
         theApp.m_today_down_traffic += cur_in_speed;
         m_history_traffic.GetTodayTraffic().up_kBytes = theApp.m_today_up_traffic / 1024u;
         m_history_traffic.GetTodayTraffic().down_kBytes = theApp.m_today_down_traffic / 1024u;
-        //每隔5秒保存一次小型检查点，强制终止时最多损失一个检查点周期的数据
-        if (m_monitor_time_cnt % GetMonitorTimerCount(5) == GetMonitorTimerCount(5) - 1)
+        //检查点使用自适应节流：大流量时至少间隔15秒，低流量时最多等待60秒。
+        const unsigned __int64 current_kbytes = m_history_traffic.GetTodayTraffic().kBytes();
+        if (m_history_full_save_pending)
         {
-            unsigned __int64 current_kbytes = m_history_traffic.GetTodayTraffic().kBytes();
-            if (last_check_day != current_time.wDay)
+            const ULONGLONG elapsed = checkpoint_tick >= m_last_history_full_save_attempt_tick
+                ? checkpoint_tick - m_last_history_full_save_attempt_tick
+                : CHistoryTrafficCheckpointSchedule::MIN_INTERVAL_MS;
+            if (elapsed >= CHistoryTrafficCheckpointSchedule::MIN_INTERVAL_MS)
             {
-                checkpoint_initialized = false;
-                last_check_day = current_time.wDay;
-            }
-
-            if (m_history_full_save_pending)
-            {
-                if (SaveHistoryTrafficFull())
+                m_last_history_full_save_attempt_tick = checkpoint_tick;
+                if (SaveHistoryTrafficFull(m_history_rotate_backup_on_full_save))
                 {
                     m_history_full_save_pending = false;
-                    checkpoint_initialized = SaveHistoryTraffic();
-                    if (checkpoint_initialized)
-                        last_checkpoint_kbytes = current_kbytes;
+                    if (SaveHistoryTraffic())
+                        m_history_checkpoint_schedule.MarkSaved(current_kbytes, checkpoint_tick);
                 }
             }
-            else if (!checkpoint_initialized || current_kbytes != last_checkpoint_kbytes)
+        }
+        else if (m_history_checkpoint_schedule.ShouldSave(current_kbytes, checkpoint_tick))
+        {
+            if (SaveHistoryTraffic())
             {
-                if (SaveHistoryTraffic())
-                {
-                    last_checkpoint_kbytes = current_kbytes;
-                    checkpoint_initialized = true;
-                }
+                m_history_checkpoint_schedule.MarkSaved(current_kbytes, checkpoint_tick);
             }
         }
     }
@@ -1361,7 +1373,7 @@ void CTrafficMonitorDlg::DoMonitorAcquisition()
         IniConnection();
         CString info = CCommon::LoadText(IDS_INSUFFICIENT_BUFFER);
         info.Replace(_T("<%cnt%>"), CCommon::IntToString(m_restart_cnt));
-        CCommon::WriteLog(info, theApp.m_log_path.c_str());
+        CCommon::WriteLogRateLimited(info, theApp.m_log_path.c_str(), _T("get-if-table-insufficient-buffer"));
     }
 
     if (m_monitor_time_cnt % GetMonitorTimerCount(3) == GetMonitorTimerCount(3) - 1)
@@ -2206,7 +2218,7 @@ void CTrafficMonitorDlg::OnClose()
     theApp.m_cannot_save_global_config_warning = true;
     theApp.SaveConfig();    //退出前保存设置到ini文件
     theApp.SaveGlobalConfig();
-    SaveHistoryTrafficFull();  // 退出时使用完整保存，确保所有数据都保存
+    SaveHistoryTrafficForShutdown(); //退出时只持久化当天检查点，避免重写完整历史
 
     if (IsTaskbarWndValid())
         m_tBarDlg->OnCancel();
@@ -2823,7 +2835,7 @@ BOOL CTrafficMonitorDlg::OnQueryEndSession()
     // TODO:  在此添加专用的查询结束会话代码
     theApp.SaveConfig();
     theApp.SaveGlobalConfig();
-    SaveHistoryTrafficFull();  // 系统关机时使用完整保存，确保所有数据都保存
+    SaveHistoryTrafficForShutdown(); //系统关机时持久化当天检查点
 
     if (theApp.m_debug_log)
     {

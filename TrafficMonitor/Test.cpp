@@ -144,6 +144,7 @@ static void TestHistoryTrafficPersistence()
 
     CHistoryTrafficFile traffic_file(file_path);
     ASSERT(traffic_file.Load());
+    ASSERT(!traffic_file.IsFullSaveRequiredAfterLoad());
     CHistoryTrafficFile backup_file(backup_path);
     backup_file.Load();
     ASSERT(traffic_file.Merge(backup_file, true) == 2);
@@ -154,7 +155,12 @@ static void TestHistoryTrafficPersistence()
     ASSERT(previous_day_traffic.up_kBytes == 10);
     ASSERT(previous_day_traffic.down_kBytes == 30);
     ASSERT(traffic_file.Save());
-    ASSERT(traffic_file.SaveBackup());
+    ASSERT(CCommon::FileExist(backup_path.c_str()));
+
+    CHistoryTrafficFile rotated_backup(backup_path);
+    rotated_backup.Load();
+    ASSERT(rotated_backup.GetTodayTraffic().up_kBytes == 100);
+    ASSERT(rotated_backup.GetTodayTraffic().down_kBytes == 200);
 
     CHistoryTrafficFile reloaded_file(file_path);
     ASSERT(!reloaded_file.Load());
@@ -171,7 +177,34 @@ static void TestHistoryTrafficPersistence()
     ASSERT(damaged_file.GetTodayTraffic().down_kBytes == 2);
     ASSERT(damaged_file.GetHistoryTraffics().empty());
 
+    WriteHistoryFixture(checkpoint_path, { MakeTrafficRecord(previous_day, 20, 40) }, false);
+    CHistoryTrafficFile past_checkpoint_file(file_path);
+    ASSERT(past_checkpoint_file.Load());
+    ASSERT(past_checkpoint_file.IsFullSaveRequiredAfterLoad());
+
     cleanup();
+}
+
+static void TestHistoryTrafficCheckpointSchedule()
+{
+    CHistoryTrafficCheckpointSchedule schedule;
+    schedule.Reset(100, 1000);
+
+    ASSERT(!schedule.ShouldSave(100, 1000 + CHistoryTrafficCheckpointSchedule::MAX_INTERVAL_MS));
+    ASSERT(!schedule.ShouldSave(101, 1000 + CHistoryTrafficCheckpointSchedule::MIN_INTERVAL_MS));
+    ASSERT(schedule.ShouldSave(101, 1000 + CHistoryTrafficCheckpointSchedule::MAX_INTERVAL_MS));
+
+    schedule.MarkSaved(101, 1000 + CHistoryTrafficCheckpointSchedule::MAX_INTERVAL_MS);
+    const ULONGLONG saved_tick = 1000 + CHistoryTrafficCheckpointSchedule::MAX_INTERVAL_MS;
+    const unsigned __int64 threshold_total = 101 + CHistoryTrafficCheckpointSchedule::TRAFFIC_THRESHOLD_KBYTES;
+    ASSERT(!schedule.ShouldSave(threshold_total,
+        saved_tick + CHistoryTrafficCheckpointSchedule::MIN_INTERVAL_MS - 1));
+    ASSERT(schedule.ShouldSave(threshold_total,
+        saved_tick + CHistoryTrafficCheckpointSchedule::MIN_INTERVAL_MS));
+
+    schedule.Reset(500, 200000);
+    ASSERT(!schedule.ShouldSave(500, 100));
+    ASSERT(schedule.ShouldSave(501, 100));
 }
 
 ///////////////////////////////////////////////////////////////////////////////////////////////////////////////////
@@ -193,6 +226,7 @@ void CTest::Test()
     //TestIni();
     TestPluginVersion();
     TestHistoryTrafficPersistence();
+    TestHistoryTrafficCheckpointSchedule();
 }
 
 void CTest::TestCommand()

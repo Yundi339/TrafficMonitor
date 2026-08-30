@@ -77,7 +77,8 @@ void LogWin32ApiErrorMessage(DWORD error_code) noexcept
             NULL);
         if (fomat_error != nullptr)
         {
-            CCommon::WriteLog(fomat_error, theApp.m_log_path.c_str());
+            const wstring rate_key = L"taskbar-win32-error-" + std::to_wstring(error_code);
+            CCommon::WriteLogRateLimited(fomat_error, theApp.m_log_path.c_str(), rate_key.c_str());
             ::LocalFree(fomat_error);
         }
     }
@@ -111,16 +112,15 @@ void DrawCommonHelper::LogDeviceRecreateReason(HRESULT hr)
             "Returned when a graphics device was enabled, disabled, or reset without invalidating the current graphics device. For example, this error code can be returned if an app is using WARP and a hardware adapter becomes available.")}};
 
     auto it = removed_reason.find(hr);
+    const wstring rate_key = L"render-device-recreate-reason-" + std::to_wstring(hr);
     if (it != removed_reason.end())
     {
-        CCommon::WriteLog(it->second, theApp.m_log_path.c_str());
+        CCommon::WriteLogRateLimited(it->second, theApp.m_log_path.c_str(), rate_key.c_str());
     }
     else
     {
-        constexpr static auto unknown_reason{"Recreate the device for an unknown reason."};
-        CCommon::WriteLog(unknown_reason, theApp.m_log_path.c_str());
-        auto str_hr = std::string{"The reason reports HResult = "} + std::to_string(hr);
-        CCommon::WriteLog(str_hr.c_str(), theApp.m_log_path.c_str());
+        const string unknown_reason = "Recreate the device for an unknown reason. HResult = " + std::to_string(hr);
+        CCommon::WriteLogRateLimited(unknown_reason.c_str(), theApp.m_log_path.c_str(), rate_key.c_str());
     }
 }
 
@@ -198,10 +198,8 @@ bool CTaskBarDlgDrawCommonSupport::IsAllDevicesRecreatedByThisFunction()
     auto hr = p_d3d10_device1->GetDeviceRemovedReason();
     if (hr != S_OK)
     {
-        CCommon::WriteLog("Notice: D3D10.1 device is invalid. All devices will be recreated. This message is sent by "
-                          "the function on the next line:",
-                          theApp.m_log_path.c_str());
-        CCommon::WriteLog(__FUNCSIG__, theApp.m_log_path.c_str());
+        const string log = string("Notice: D3D10.1 device is invalid. All devices will be recreated.\n") + __FUNCSIG__;
+        CCommon::WriteLogRateLimited(log.c_str(), theApp.m_log_path.c_str(), _T("render-invalid-d3d10-device"));
         RecreateAll();
         return true;
     }
@@ -266,9 +264,6 @@ auto CTaskBarDlgDrawCommonSupport::GetPsDotLikeStyle() noexcept
 
 void CTaskBarDlgDrawCommonSupport::RecreateAll()
 {
-    CCommon::WriteLog("Notice: All devices will be recreated. This message is sent by the function on the next line:",
-                      theApp.m_log_path.c_str());
-    CCommon::WriteLog(__FUNCSIG__, theApp.m_log_path.c_str());
     InternalRecreateD3D10Device1();
     RecreateD2D1Device();
     RecreateDCompositionDevice();
@@ -279,10 +274,8 @@ void CTaskBarDlgDrawCommonSupport::RecreateD3D10Device1(const HRESULT recreate_r
     if (recreate_reason != S_OK)
     {
         DrawCommonHelper::LogDeviceRecreateReason(recreate_reason);
-        CCommon::WriteLog("Notice: D3D10.1 device is invalid. All devices will be recreated. This message is sent by "
-                          "the function on the next line:",
-                          theApp.m_log_path.c_str());
-        CCommon::WriteLog(__FUNCSIG__, theApp.m_log_path.c_str());
+        const string log = string("Notice: D3D10.1 device is invalid. All devices will be recreated.\n") + __FUNCSIG__;
+        CCommon::WriteLogRateLimited(log.c_str(), theApp.m_log_path.c_str(), _T("render-recreate-all-devices"));
     }
     RecreateAll();
 }
@@ -292,10 +285,8 @@ void CTaskBarDlgDrawCommonSupport::RecreateD2D1Device(const HRESULT recreate_rea
     if (recreate_reason != S_OK)
     {
         DrawCommonHelper::LogDeviceRecreateReason(recreate_reason);
-        CCommon::WriteLog(
-            "Notice: The D2D1 device will be recreated. This message is sent by the function on the next line:",
-            theApp.m_log_path.c_str());
-        CCommon::WriteLog(__FUNCSIG__, theApp.m_log_path.c_str());
+        const string log = string("Notice: The D2D1 device will be recreated.\n") + __FUNCSIG__;
+        CCommon::WriteLogRateLimited(log.c_str(), theApp.m_log_path.c_str(), _T("render-recreate-d2d1-device"));
     }
     if (IsAllDevicesRecreatedByThisFunction())
     {
@@ -313,9 +304,8 @@ void CTaskBarDlgDrawCommonSupport::RecreateDCompositionDevice(const HRESULT recr
     if (recreate_reason != S_OK)
     {
         DrawCommonHelper::LogDeviceRecreateReason(recreate_reason);
-        CCommon::WriteLog("Notice: The DirectComposition device will be recreated. This message is sent by the function on the next line:",
-            theApp.m_log_path.c_str());
-        CCommon::WriteLog(__FUNCSIG__, theApp.m_log_path.c_str());
+        const string log = string("Notice: The DirectComposition device will be recreated.\n") + __FUNCSIG__;
+        CCommon::WriteLogRateLimited(log.c_str(), theApp.m_log_path.c_str(), _T("render-recreate-dcomposition-device"));
     }
     if (IsAllDevicesRecreatedByThisFunction())
     {

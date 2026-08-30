@@ -71,6 +71,8 @@ public:
     //将一个日志信息str_text写入到file_path文件中
     static void WriteLog(const char* str_text, LPCTSTR file_path);
     static void WriteLog(const wchar_t* str_text, LPCTSTR file_path);
+    static bool WriteLogRateLimited(const char* str_text, LPCTSTR file_path, LPCTSTR rate_key, ULONGLONG interval_ms = 60000);
+    static bool WriteLogRateLimited(const wchar_t* str_text, LPCTSTR file_path, LPCTSTR rate_key, ULONGLONG interval_ms = 60000);
 
     /*
     函数功能：对指定文件在指定的目录下创建其快捷方式

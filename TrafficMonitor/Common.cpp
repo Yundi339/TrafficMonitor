@@ -1,7 +1,85 @@
 ﻿#include "stdafx.h"
 #include "Common.h"
 #include "TrafficMonitor.h"
+#include <limits>
+#include <mutex>
+#include <unordered_map>
 
+namespace
+{
+    constexpr ULONGLONG MAX_LOG_FILE_SIZE = 4ull * 1024 * 1024;
+
+    struct LogRateLimitState
+    {
+        ULONGLONG last_write_tick{};
+        unsigned __int64 suppressed_count{};
+        bool initialized{};
+    };
+
+    void RotateLogIfNeeded(LPCTSTR file_path)
+    {
+        if (file_path == nullptr || file_path[0] == _T('\0'))
+            return;
+
+        WIN32_FILE_ATTRIBUTE_DATA attributes{};
+        if (!GetFileAttributesEx(file_path, GetFileExInfoStandard, &attributes))
+            return;
+
+        ULARGE_INTEGER file_size{};
+        file_size.LowPart = attributes.nFileSizeLow;
+        file_size.HighPart = attributes.nFileSizeHigh;
+        if (file_size.QuadPart < MAX_LOG_FILE_SIZE)
+            return;
+
+        wstring old_path{ file_path };
+        old_path += L".old";
+        MoveFileExW(file_path, old_path.c_str(), MOVEFILE_REPLACE_EXISTING);
+    }
+
+    void WriteLogLine(const string& text, LPCTSTR file_path)
+    {
+        RotateLogIfNeeded(file_path);
+
+        SYSTEMTIME current_time;
+        GetLocalTime(&current_time);
+        char timestamp[32];
+        sprintf_s(timestamp, "%d/%.2d/%.2d %.2d:%.2d:%.2d.%.3d: ", current_time.wYear, current_time.wMonth, current_time.wDay,
+            current_time.wHour, current_time.wMinute, current_time.wSecond, current_time.wMilliseconds);
+        ofstream file{ file_path, std::ios::app };
+        if (file.is_open())
+            file << timestamp << text << '\n';
+    }
+
+    bool ConsumeLogRateLimit(LPCTSTR file_path, LPCTSTR rate_key, ULONGLONG interval_ms,
+        unsigned __int64& suppressed_count)
+    {
+        static std::mutex rate_limit_mutex;
+        static std::unordered_map<wstring, LogRateLimitState> rate_limits;
+
+        wstring key{ file_path == nullptr ? _T("") : file_path };
+        key += L'\n';
+        key += rate_key == nullptr ? _T("") : rate_key;
+
+        const ULONGLONG current_tick = GetTickCount64();
+        std::lock_guard<std::mutex> lock{ rate_limit_mutex };
+        LogRateLimitState& state = rate_limits[key];
+        const ULONGLONG elapsed = current_tick >= state.last_write_tick
+            ? current_tick - state.last_write_tick
+            : interval_ms;
+        if (state.initialized && elapsed < interval_ms)
+        {
+            if (state.suppressed_count != (std::numeric_limits<unsigned __int64>::max)())
+                ++state.suppressed_count;
+            return false;
+        }
+
+        suppressed_count = state.suppressed_count;
+        state.last_write_tick = current_tick;
+        state.suppressed_count = 0;
+        state.initialized = true;
+        return true;
+    }
+}
 
 CCommon::CCommon()
 {
@@ -424,26 +502,38 @@ __int64 CCommon::CompareFileTime2(FILETIME time1, FILETIME time2)
 
 void CCommon::WriteLog(const char* str_text, LPCTSTR file_path)
 {
-    SYSTEMTIME cur_time;
-    GetLocalTime(&cur_time);
-    char buff[32];
-    sprintf_s(buff, "%d/%.2d/%.2d %.2d:%.2d:%.2d.%.3d: ", cur_time.wYear, cur_time.wMonth, cur_time.wDay,
-        cur_time.wHour, cur_time.wMinute, cur_time.wSecond, cur_time.wMilliseconds);
-    ofstream file{ file_path, std::ios::app };  //以追加的方式打开日志文件
-    file << buff;
-    file << str_text << std::endl;
+    WriteLogLine(str_text == nullptr ? "" : str_text, file_path);
 }
 
 void CCommon::WriteLog(const wchar_t* str_text, LPCTSTR file_path)
 {
-    SYSTEMTIME cur_time;
-    GetLocalTime(&cur_time);
-    char buff[32];
-    sprintf_s(buff, "%d/%.2d/%.2d %.2d:%.2d:%.2d.%.3d: ", cur_time.wYear, cur_time.wMonth, cur_time.wDay,
-        cur_time.wHour, cur_time.wMinute, cur_time.wSecond, cur_time.wMilliseconds);
-    ofstream file{ file_path, std::ios::app };  //以追加的方式打开日志文件
-    file << buff;
-    file << UnicodeToStr(str_text).c_str() << std::endl;
+    WriteLogLine(str_text == nullptr ? string{} : UnicodeToStr(str_text), file_path);
+}
+
+bool CCommon::WriteLogRateLimited(const char* str_text, LPCTSTR file_path, LPCTSTR rate_key, ULONGLONG interval_ms)
+{
+    unsigned __int64 suppressed_count{};
+    if (!ConsumeLogRateLimit(file_path, rate_key, interval_ms, suppressed_count))
+        return false;
+
+    string message = str_text == nullptr ? string{} : string{ str_text };
+    if (suppressed_count > 0)
+        message += "\nSuppressed " + std::to_string(suppressed_count) + " repeated log message(s) since the previous entry.";
+    WriteLog(message.c_str(), file_path);
+    return true;
+}
+
+bool CCommon::WriteLogRateLimited(const wchar_t* str_text, LPCTSTR file_path, LPCTSTR rate_key, ULONGLONG interval_ms)
+{
+    unsigned __int64 suppressed_count{};
+    if (!ConsumeLogRateLimit(file_path, rate_key, interval_ms, suppressed_count))
+        return false;
+
+    wstring message = str_text == nullptr ? wstring{} : wstring{ str_text };
+    if (suppressed_count > 0)
+        message += L"\nSuppressed " + std::to_wstring(suppressed_count) + L" repeated log message(s) since the previous entry.";
+    WriteLog(message.c_str(), file_path);
+    return true;
 }
 
 BOOL CCommon::CreateFileShortcut(LPCTSTR lpszLnkFileDir, LPCTSTR lpszFileName, LPCTSTR lpszLnkFileName, LPCTSTR lpszWorkDir, WORD wHotkey, LPCTSTR lpszDescription, int iShowCmd)
