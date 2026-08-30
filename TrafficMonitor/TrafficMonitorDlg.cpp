@@ -729,8 +729,7 @@ bool CTrafficMonitorDlg::SaveHistoryTrafficFull()
     CSingleLock sync(&m_history_traffic_critical, TRUE);
     if (!m_history_traffic.Save())
         return false;
-    m_history_traffic.SaveBackup();
-    return true;
+    return m_history_traffic.SaveBackup();
 }
 
 void CTrafficMonitorDlg::LoadHistoryTraffic()

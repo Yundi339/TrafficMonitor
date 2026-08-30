@@ -33,7 +33,6 @@ namespace
 
         wstring old_path{ file_path };
         old_path += L".old";
-        DeleteFileW(old_path.c_str());
         MoveFileExW(file_path, old_path.c_str(), MOVEFILE_REPLACE_EXISTING);
     }
 
