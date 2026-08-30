@@ -141,7 +141,9 @@ protected:
     static UINT MonitorThreadCallback(LPVOID dwUser);   //获取监控信息的线程函数
     CEvent m_monitorDataRequiredEvent; //监控定时器用于唤醒工作线程的自动复位事件
     std::atomic_bool m_is_thread_exit{ false }; //线程退出标志
+    std::atomic_bool m_monitor_update_message_pending{ false }; //合并尚未处理的UI更新消息
     CEvent m_threadExitEvent;       //用于通知主线程工作线程已退出
+    bool m_monitor_thread_started{};
 public:
     void ExitMonitorThread();       //停止监控线程
 
@@ -268,6 +270,7 @@ protected:
 public:
     afx_msg void OnShowNetSpeed();
     afx_msg BOOL OnQueryEndSession();
+    afx_msg void OnEndSession(BOOL bEnding);
     afx_msg void OnPaint();
 protected:
     afx_msg LRESULT OnDpichanged(WPARAM wParam, LPARAM lParam);

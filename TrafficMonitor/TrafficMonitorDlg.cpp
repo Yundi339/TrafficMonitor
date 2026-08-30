@@ -126,6 +126,7 @@ BEGIN_MESSAGE_MAP(CTrafficMonitorDlg, CDialog)
     ON_MESSAGE(WM_TASKBAR_MENU_POPED_UP, &CTrafficMonitorDlg::OnTaskbarMenuPopedUp)
     ON_COMMAND(ID_SHOW_NET_SPEED, &CTrafficMonitorDlg::OnShowNetSpeed)
     ON_WM_QUERYENDSESSION()
+    ON_WM_ENDSESSION()
     ON_WM_PAINT()
     ON_MESSAGE(WM_DPICHANGED, &CTrafficMonitorDlg::OnDpichanged)
     ON_MESSAGE(WM_TASKBAR_WND_CLOSED, &CTrafficMonitorDlg::OnTaskbarWndClosed)
@@ -1183,7 +1184,7 @@ BOOL CTrafficMonitorDlg::OnInitDialog()
     SetTimer(MAIN_TIMER, 1000, NULL);
 
     SetTimer(MONITOR_TIMER, theApp.m_general_data.monitor_time_span, NULL);
-    AfxBeginThread(MonitorThreadCallback, (LPVOID)this);
+    m_monitor_thread_started = AfxBeginThread(MonitorThreadCallback, (LPVOID)this) != nullptr;
 
     //初始化窗口位置
     SetItemPosition();
@@ -1609,8 +1610,12 @@ void CTrafficMonitorDlg::DoMonitorAcquisition()
 
     m_monitor_time_cnt++;
 
-    //发送监控信息更新消息
-    SendMessage(WM_MONITOR_INFO_UPDATED);
+    //异步合并UI更新，避免工作线程与正在退出的UI线程互相等待。
+    if (!m_monitor_update_message_pending.exchange(true))
+    {
+        if (!PostMessage(WM_MONITOR_INFO_UPDATED))
+            m_monitor_update_message_pending.store(false);
+    }
 }
 
 UINT CTrafficMonitorDlg::MonitorThreadCallback(LPVOID dwUser)
@@ -1648,12 +1653,17 @@ void CTrafficMonitorDlg::ResetTaskbarMaintenanceTimer()
 
 void CTrafficMonitorDlg::ExitMonitorThread()
 {
+    if (!m_monitor_thread_started)
+        return;
+
+    KillTimer(MONITOR_TIMER);
     // 通知线程退出
     m_is_thread_exit.store(true, std::memory_order_release);
     m_monitorDataRequiredEvent.SetEvent();
 
-    // 等待线程退出
-    ::WaitForSingleObject(m_threadExitEvent.m_hObject, 1000);
+    // 对话框销毁前必须等待线程真正退出，避免工作线程继续访问已释放的this。
+    ::WaitForSingleObject(m_threadExitEvent.m_hObject, INFINITE);
+    m_monitor_thread_started = false;
 }
 
 
@@ -2232,6 +2242,7 @@ void CTrafficMonitorDlg::OnTransparency40()
 void CTrafficMonitorDlg::OnClose()
 {
     // TODO: 在此添加消息处理程序代码和/或调用默认值
+    ExitMonitorThread();
     theApp.m_cannot_save_config_warning = true;
     theApp.m_cannot_save_global_config_warning = true;
     theApp.SaveConfig();    //退出前保存设置到ini文件
@@ -2511,13 +2522,13 @@ void CTrafficMonitorDlg::OnShowNotifyIcon()
 
 void CTrafficMonitorDlg::OnDestroy()
 {
-    CDialog::OnDestroy();
+    // 保持窗口有效，直到工作线程完全退出；该调用在正常OnClose后是幂等的。
+    ExitMonitorThread();
 
     //程序退出时删除通知栏图标
     ::Shell_NotifyIcon(NIM_DELETE, &m_ntIcon);
 
-    // 停止监控线程
-    ExitMonitorThread();
+    CDialog::OnDestroy();
 }
 
 
@@ -2858,10 +2869,20 @@ BOOL CTrafficMonitorDlg::OnQueryEndSession()
 
     if (theApp.m_debug_log)
     {
-        CCommon::WriteLog(_T("TrafficMonitor进程已被终止，设置已保存。"), (theApp.m_config_dir + L".\\debug.log").c_str());
+        CCommon::WriteLog(_T("收到系统结束会话查询，设置已保存。"), (theApp.m_config_dir + L".\\debug.log").c_str());
     }
 
     return TRUE;
+}
+
+void CTrafficMonitorDlg::OnEndSession(BOOL bEnding)
+{
+    if (bEnding)
+    {
+        ExitMonitorThread();
+        SaveHistoryTrafficForShutdown();
+    }
+    CDialog::OnEndSession(bEnding);
 }
 
 
@@ -2934,6 +2955,7 @@ afx_msg LRESULT CTrafficMonitorDlg::OnTaskbarWndClosed(WPARAM wParam, LPARAM lPa
 
 afx_msg LRESULT CTrafficMonitorDlg::OnMonitorInfoUpdated(WPARAM wParam, LPARAM lParam)
 {
+    m_monitor_update_message_pending.store(false);
     Invalidate(FALSE);      //刷新窗口信息
 
     //更新鼠标提示

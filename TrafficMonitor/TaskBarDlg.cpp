@@ -13,6 +13,11 @@
 #include "WindowsWebExperienceDetector.h"
 #include "TaskbarHelper.h"
 
+namespace
+{
+    constexpr ULONGLONG TASKBAR_GRAPH_SAMPLE_INTERVAL_MS = 100;
+}
+
 #ifdef DEBUG
 // DX调试信息捕获
 #include "dxgi1_3.h"
@@ -1315,6 +1320,11 @@ void CTaskBarDlg::OnPaint()
                        // TODO: 在此处添加消息处理程序代码
                        // 不为绘图消息调用 CDialogEx::OnPaint()
 
+    const ULONGLONG current_tick = GetTickCount64();
+    m_sample_graph_on_current_paint = current_tick - m_last_graph_sample_tick >= TASKBAR_GRAPH_SAMPLE_INTERVAL_MS;
+    if (m_sample_graph_on_current_paint)
+        m_last_graph_sample_tick = current_tick;
+
     try
     {
         ShowInfo(&dc);
@@ -1363,10 +1373,14 @@ void CTaskBarDlg::OnPaint()
         DrawCommonHelper::DefaultD2DDrawCommonExceptionHandler::HandleErrorCountIncrement();
     }
 
+    m_sample_graph_on_current_paint = false;
 }
 
 void CTaskBarDlg::AddHisToList(CommonDisplayItem item_type, int current_usage_percent)
 {
+    if (!m_sample_graph_on_current_paint)
+        return;
+
     int& data_count{ m_history_data_count[item_type] };
     std::list<int>& list = m_map_history_data[item_type];
     //将数累加到加链表的头部，直到添加的数据数量达到TASKBAR_GRAPH_STEP的倍数时计算平均数
