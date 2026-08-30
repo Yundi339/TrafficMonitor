@@ -580,6 +580,7 @@ void CTrafficMonitorDlg::CloseTaskBarWnd()
         m_tBarDlg = nullptr;
         theApp.m_taskbar_data.update_layered_window_error_code = 0;
     }
+    ResetTaskbarMaintenanceTimer();
 }
 
 void CTrafficMonitorDlg::OpenTaskBarWnd()
@@ -611,6 +612,7 @@ void CTrafficMonitorDlg::OpenTaskBarWnd()
         break;
     }
     m_tBarDlg->ShowWindow(SW_SHOW);
+    ResetTaskbarMaintenanceTimer();
     //m_tBarDlg->ShowInfo();
     //IniTaskBarConnectionMenu();
 }
@@ -1618,6 +1620,7 @@ UINT CTrafficMonitorDlg::MonitorThreadCallback(LPVOID dwUser)
 bool CTrafficMonitorDlg::IsTaskbarHighFrequencyRefreshNeeded() const
 {
     return theApp.m_cfg_data.m_show_task_bar_wnd
+        && IsTaskbarWndValid()
         && theApp.m_taskbar_data.cm_graph_type
         && (theApp.m_taskbar_data.show_status_bar || theApp.m_taskbar_data.show_netspeed_figure);
 }
