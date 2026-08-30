@@ -144,6 +144,7 @@ static void TestHistoryTrafficPersistence()
 
     CHistoryTrafficFile traffic_file(file_path);
     ASSERT(traffic_file.Load());
+    ASSERT(!traffic_file.IsFullSaveRequiredAfterLoad());
     CHistoryTrafficFile backup_file(backup_path);
     backup_file.Load();
     ASSERT(traffic_file.Merge(backup_file, true) == 2);
@@ -154,7 +155,12 @@ static void TestHistoryTrafficPersistence()
     ASSERT(previous_day_traffic.up_kBytes == 10);
     ASSERT(previous_day_traffic.down_kBytes == 30);
     ASSERT(traffic_file.Save());
-    ASSERT(traffic_file.SaveBackup());
+    ASSERT(CCommon::FileExist(backup_path.c_str()));
+
+    CHistoryTrafficFile rotated_backup(backup_path);
+    rotated_backup.Load();
+    ASSERT(rotated_backup.GetTodayTraffic().up_kBytes == 100);
+    ASSERT(rotated_backup.GetTodayTraffic().down_kBytes == 200);
 
     CHistoryTrafficFile reloaded_file(file_path);
     ASSERT(!reloaded_file.Load());
@@ -170,6 +176,11 @@ static void TestHistoryTrafficPersistence()
     ASSERT(damaged_file.GetTodayTraffic().up_kBytes == 1);
     ASSERT(damaged_file.GetTodayTraffic().down_kBytes == 2);
     ASSERT(damaged_file.GetHistoryTraffics().empty());
+
+    WriteHistoryFixture(checkpoint_path, { MakeTrafficRecord(previous_day, 20, 40) }, false);
+    CHistoryTrafficFile past_checkpoint_file(file_path);
+    ASSERT(past_checkpoint_file.Load());
+    ASSERT(past_checkpoint_file.IsFullSaveRequiredAfterLoad());
 
     cleanup();
 }

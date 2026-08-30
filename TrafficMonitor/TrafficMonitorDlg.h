@@ -122,6 +122,7 @@ protected:
     CCriticalSection m_history_traffic_critical; //同步监控线程与UI线程的历史流量访问
     CHistoryTrafficCheckpointSchedule m_history_checkpoint_schedule;
     ULONGLONG m_last_history_full_save_attempt_tick{};
+    bool m_history_rotate_backup_on_full_save{ true };
     bool m_history_full_save_pending{};
 
     CToolTipCtrl m_tool_tips;
@@ -178,7 +179,8 @@ protected:
     void UpdateNotifyIconTip();     //更新通知区图标的鼠标提示
 
     bool SaveHistoryTraffic();        // 保存当天流量检查点
-    bool SaveHistoryTrafficFull();    // 完整保存，用于程序退出时确保所有数据都保存
+    bool SaveHistoryTrafficFull(bool rotate_backup = true); // 完整保存并可选择轮转上一代备份
+    bool SaveHistoryTrafficForShutdown(); // 退出时只持久化单行检查点，必要时回退到完整保存
     void LoadHistoryTraffic();
 
     void _OnOptions(int tab, CWnd* pParent);   //打开“选项”对话框的处理，tab：打开时切换的标签
