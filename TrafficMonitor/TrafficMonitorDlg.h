@@ -138,10 +138,15 @@ protected:
     string m_connection_name_preferd{ theApp.m_cfg_data.m_connection_name };          //保存用户手动选择的网络连接名称
 
     void DoMonitorAcquisition();    //获取一次监控信息
+    void QueueMonitorErrorNotification(const CString& error_message); //将采集错误交给UI线程以非模态方式提示
+    void PostMonitorInfoUpdate(); //异步合并监控信息更新消息
     static UINT MonitorThreadCallback(LPVOID dwUser);   //获取监控信息的线程函数
     CEvent m_monitorDataRequiredEvent; //监控定时器用于唤醒工作线程的自动复位事件
     std::atomic_bool m_is_thread_exit{ false }; //线程退出标志
     std::atomic_bool m_monitor_update_message_pending{ false }; //合并尚未处理的UI更新消息
+    CCriticalSection m_monitor_error_critical; //同步采集线程和UI线程间的错误消息
+    CString m_pending_monitor_error;
+    CString m_last_notified_monitor_error;
     CEvent m_threadExitEvent;       //用于通知主线程工作线程已退出
     bool m_monitor_thread_started{};
 public:

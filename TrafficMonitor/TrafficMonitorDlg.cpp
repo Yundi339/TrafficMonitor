@@ -1510,7 +1510,9 @@ void CTrafficMonitorDlg::DoMonitorAcquisition()
             }
             __except (EXCEPTION_EXECUTE_HANDLER)
             {
-                AfxMessageBox(error_info, MB_ICONERROR | MB_OK);
+                QueueMonitorErrorNotification(error_info);
+                CCommon::WriteLogRateLimited(error_info, theApp.m_log_path.c_str(),
+                    _T("hardware-info-acquire-exception"));
             }
         };
 
@@ -1518,7 +1520,9 @@ void CTrafficMonitorDlg::DoMonitorAcquisition()
         auto monitor_error_message{ OpenHardwareMonitorApi::GetErrorMessage() };
         if (!monitor_error_message.empty())
         {
-            AfxMessageBox(monitor_error_message.c_str(), MB_ICONERROR | MB_OK);
+            QueueMonitorErrorNotification(monitor_error_message.c_str());
+            CCommon::WriteLogRateLimited(monitor_error_message.c_str(), theApp.m_log_path.c_str(),
+                _T("hardware-monitor-api-error"));
         }
         //theApp.m_cpu_temperature = theApp.m_pMonitor->CpuTemperature();
         theApp.m_gpu_temperature = theApp.m_pMonitor->GpuTemperature();
@@ -1609,6 +1613,23 @@ void CTrafficMonitorDlg::DoMonitorAcquisition()
     }
 
     m_monitor_time_cnt++;
+
+    PostMonitorInfoUpdate();
+}
+
+void CTrafficMonitorDlg::QueueMonitorErrorNotification(const CString& error_message)
+{
+    if (error_message.IsEmpty())
+        return;
+
+    CSingleLock sync(&m_monitor_error_critical, TRUE);
+    m_pending_monitor_error = error_message;
+}
+
+void CTrafficMonitorDlg::PostMonitorInfoUpdate()
+{
+    if (m_is_thread_exit.load(std::memory_order_acquire))
+        return;
 
     //异步合并UI更新，避免工作线程与正在退出的UI线程互相等待。
     if (!m_monitor_update_message_pending.exchange(true))
@@ -2956,6 +2977,21 @@ afx_msg LRESULT CTrafficMonitorDlg::OnTaskbarWndClosed(WPARAM wParam, LPARAM lPa
 afx_msg LRESULT CTrafficMonitorDlg::OnMonitorInfoUpdated(WPARAM wParam, LPARAM lParam)
 {
     m_monitor_update_message_pending.store(false);
+
+    CString monitor_error;
+    {
+        CSingleLock sync(&m_monitor_error_critical, TRUE);
+        monitor_error = m_pending_monitor_error;
+        m_pending_monitor_error.Empty();
+    }
+    if (!monitor_error.IsEmpty()
+        && monitor_error != m_last_notified_monitor_error
+        && !m_is_thread_exit.load(std::memory_order_acquire))
+    {
+        m_last_notified_monitor_error = monitor_error;
+        ShowNotifyTip(CCommon::LoadText(_T("TrafficMonitor "), IDS_NOTIFY, _T("")), monitor_error);
+    }
+
     Invalidate(FALSE);      //刷新窗口信息
 
     //更新鼠标提示
