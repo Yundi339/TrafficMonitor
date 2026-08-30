@@ -54,6 +54,29 @@ namespace
         table = nullptr;
         return result;
     }
+
+    DWORD GetInterfaceRowCompatible(NET_IFINDEX interface_index, MIB_IF_ROW2& row)
+    {
+        if (interface_index == 0)
+            return ERROR_NOT_FOUND;
+        row = {};
+        row.InterfaceIndex = interface_index;
+        DWORD result = GetIfEntry2(&row);
+        if (result != ERROR_NOT_SUPPORTED && result != ERROR_CALL_NOT_IMPLEMENTED)
+            return result;
+
+        MIB_IFROW legacy_row{};
+        legacy_row.dwIndex = interface_index;
+        result = GetIfEntry(&legacy_row);
+        if (result == NO_ERROR)
+        {
+            row.InOctets = legacy_row.dwInOctets;
+            row.OutOctets = legacy_row.dwOutOctets;
+            row.OperStatus = legacy_row.dwOperStatus == IF_OPER_STATUS_OPERATIONAL
+                ? IfOperStatusUp : IfOperStatusDown;
+        }
+        return result;
+    }
 }
 
 
@@ -414,8 +437,7 @@ void CTrafficMonitorDlg::AutoSelect()
     for (size_t i{}; i < m_connections.size(); i++)
     {
         MIB_IF_ROW2 row{};
-        row.InterfaceIndex = m_connections[i].interface_index;
-        if (row.InterfaceIndex != 0 && GetIfEntry2(&row) == NO_ERROR
+        if (GetInterfaceRowCompatible(m_connections[i].interface_index, row) == NO_ERROR
             && row.OperStatus == IfOperStatusUp)     //只选择网络状态为正常的连接
         {
             in_out_bytes = row.InOctets + row.OutOctets;
@@ -1300,11 +1322,7 @@ void CTrafficMonitorDlg::DoMonitorAcquisition()
     if (!connection_state.initialized)
         RequestConnectionUiAction(CONNECTION_UI_REQUEST_REINITIALIZE);
     auto get_if_row = [&](const NetWorkConection& connection, MIB_IF_ROW2& row) {
-        if (connection.interface_index == 0)
-            return static_cast<DWORD>(ERROR_NOT_FOUND);
-        row = {};
-        row.InterfaceIndex = connection.interface_index;
-        return GetIfEntry2(&row);
+        return GetInterfaceRowCompatible(connection.interface_index, row);
     };
 
     if (!connection_state.select_all)        //获取当前选中连接的网速
