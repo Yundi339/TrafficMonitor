@@ -19,6 +19,7 @@ CNetworkInfoDlg::CNetworkInfoDlg(vector<NetWorkConection> adapters, vector<MIB_I
 
 CNetworkInfoDlg::~CNetworkInfoDlg()
 {
+    CancelInternetIpRequest();
 }
 
 
@@ -171,48 +172,85 @@ NetWorkConection CNetworkInfoDlg::GetConnection(int connection_index)
 
 UINT CNetworkInfoDlg::GetInternetIPThreadFunc(LPVOID lpParam)
 {
-    CCommon::SetThreadLanguage(theApp.m_general_data.language.language_id);		//设置线程语言
-    CNetworkInfoDlg* p_instance = (CNetworkInfoDlg*)lpParam;
-    wstring ip_address, ip_location;
-
-    //IPV4
-    CCommon::GetInternetIp2(ip_address, ip_location, false);			//获取外网IP地址，
-    if (!IsWindow(p_instance->GetSafeHwnd()))		//如果当前对话框已经销毁，则退出线程
+    using RequestStatePtr = std::shared_ptr<InternetIpRequestState>;
+    std::unique_ptr<RequestStatePtr> context(static_cast<RequestStatePtr*>(lpParam));
+    if (!context || !*context)
         return 0;
-    if (!ip_address.empty())
-    {
-        CString info;
-        if (ip_location.empty())
-            info = ip_address.c_str();
-        else
-            info.Format(_T("%s (%s)"), ip_address.c_str(), ip_location.c_str());
-        p_instance->m_info_list.SetItemText(14, 1, info);
-    }
-    else
-    {
-        p_instance->m_info_list.SetItemText(14, 1, CCommon::LoadText(IDS_GET_FAILED));
-    }
 
-    //IPV6
+    RequestStatePtr state = *context;
+    CCommon::SetThreadLanguage(state->language_id);
+
+    wstring ipv4_address, ipv4_location;
     wstring ipv6_address, ipv6_location;
-    CCommon::GetInternetIp2(ip_address, ip_location, true);			//获取外网IP地址，
-    if (!IsWindow(p_instance->GetSafeHwnd()))		//如果当前对话框已经销毁，则退出线程
-        return 0;
-    if (!ip_address.empty())
+    CCommon::GetInternetIp2(ipv4_address, ipv4_location, false);
+    CCommon::GetInternetIp2(ipv6_address, ipv6_location, true);
+
+    HWND target_window{};
     {
-        CString info;
-        if (ip_location.empty())
-            info = ip_address.c_str();
-        else
-            info.Format(_T("%s (%s)"), ip_address.c_str(), ip_location.c_str());
-        p_instance->m_info_list.SetItemText(15, 1, info);
-    }
-    else
-    {
-        p_instance->m_info_list.SetItemText(15, 1, CCommon::LoadText(IDS_GET_FAILED));
+        CSingleLock sync(&state->critical, TRUE);
+        if (state->closing)
+        {
+            state->pending = false;
+            return 0;
+        }
+        state->ipv4_address = std::move(ipv4_address);
+        state->ipv4_location = std::move(ipv4_location);
+        state->ipv6_address = std::move(ipv6_address);
+        state->ipv6_location = std::move(ipv6_location);
+        state->ready = true;
+        target_window = state->target_window;
     }
 
-    p_instance->m_ip_acquired = true;
+    if (!::PostMessage(target_window, WM_NETWORK_INFO_IP_UPDATED, 0, 0))
+    {
+        CSingleLock sync(&state->critical, TRUE);
+        state->ready = false;
+        state->pending = false;
+    }
+    return 0;
+}
+
+void CNetworkInfoDlg::CancelInternetIpRequest()
+{
+    if (!m_ip_request_state)
+        return;
+    CSingleLock sync(&m_ip_request_state->critical, TRUE);
+    m_ip_request_state->closing = true;
+    m_ip_request_state->ready = false;
+}
+
+LRESULT CNetworkInfoDlg::OnInternetIpUpdated(WPARAM wParam, LPARAM lParam)
+{
+    if (!m_ip_request_state)
+        return 0;
+
+    wstring ipv4_address, ipv4_location;
+    wstring ipv6_address, ipv6_location;
+    {
+        CSingleLock sync(&m_ip_request_state->critical, TRUE);
+        if (m_ip_request_state->closing || !m_ip_request_state->ready)
+            return 0;
+        ipv4_address = m_ip_request_state->ipv4_address;
+        ipv4_location = m_ip_request_state->ipv4_location;
+        ipv6_address = m_ip_request_state->ipv6_address;
+        ipv6_location = m_ip_request_state->ipv6_location;
+        m_ip_request_state->ready = false;
+        m_ip_request_state->pending = false;
+    }
+
+    auto format_address = [](const wstring& address, const wstring& location) {
+        CString info;
+        if (address.empty())
+            return CCommon::LoadText(IDS_GET_FAILED);
+        if (location.empty())
+            info = address.c_str();
+        else
+            info.Format(_T("%s (%s)"), address.c_str(), location.c_str());
+        return info;
+    };
+    m_info_list.SetItemText(14, 1, format_address(ipv4_address, ipv4_location));
+    m_info_list.SetItemText(15, 1, format_address(ipv6_address, ipv6_location));
+    m_ip_acquired = true;
     return 0;
 }
 
@@ -237,6 +275,7 @@ BEGIN_MESSAGE_MAP(CNetworkInfoDlg, CBaseDialog)
     ON_WM_TIMER()
     ON_WM_MOUSEWHEEL()
     ON_NOTIFY(NM_DBLCLK, IDC_INFO_LIST1, &CNetworkInfoDlg::OnNMDblclkInfoList1)
+    ON_MESSAGE(WM_NETWORK_INFO_IP_UPDATED, &CNetworkInfoDlg::OnInternetIpUpdated)
 END_MESSAGE_MAP()
 
 
@@ -246,6 +285,10 @@ END_MESSAGE_MAP()
 BOOL CNetworkInfoDlg::OnInitDialog()
 {
     CBaseDialog::OnInitDialog();
+
+    m_ip_request_state = std::make_shared<InternetIpRequestState>();
+    m_ip_request_state->target_window = GetSafeHwnd();
+    m_ip_request_state->language_id = theApp.m_general_data.language.language_id;
 
     // TODO:  在此添加额外的初始化
     SetIcon(theApp.GetMenuIcon(IDI_INFO), FALSE);		// 设置小图标
@@ -299,10 +342,6 @@ BOOL CNetworkInfoDlg::OnInitDialog()
     ShowInfo();
     GetProgramElapsedTime();
 
-    //CCommon::GetInternetIp();
-    //if (theApp.m_cfg_data.m_show_internet_ip)
- //       m_pGetIPThread = AfxBeginThread(GetInternetIPThreadFunc, this);		//启动获取外网IP的线程
-
     //SetWindowPos(&wndNoTopMost, 0, 0, 0, 0, SWP_NOSIZE | SWP_NOMOVE);		//取消置顶
     m_info_list.GetToolTips()->SetWindowPos(&wndTopMost, 0, 0, 0, 0, SWP_NOSIZE | SWP_NOMOVE);
 
@@ -346,10 +385,7 @@ void CNetworkInfoDlg::OnNMRClickInfoList1(NMHDR* pNMHDR, LRESULT* pResult)
 
 void CNetworkInfoDlg::OnClose()
 {
-    // TODO: 在此添加消息处理程序代码和/或调用默认值
-    //对话框关闭时强制结束获取IP地址的线程
-    //if(theApp.m_cfg_data.m_show_internet_ip)
- //       TerminateThread(m_pGetIPThread->m_hThread, 0);
+    CancelInternetIpRequest();
     CBaseDialog::OnClose();
 }
 
@@ -432,9 +468,34 @@ void CNetworkInfoDlg::OnNMDblclkInfoList1(NMHDR* pNMHDR, LRESULT* pResult)
     // TODO: 在此添加控件通知处理程序代码
     if (/*!theApp.m_cfg_data.m_show_internet_ip && */!m_ip_acquired && (pNMItemActivate->iItem == 14 || pNMItemActivate->iItem == 15))		//双击了IP地址一行时
     {
+        if (!m_ip_request_state)
+        {
+            *pResult = 0;
+            return;
+        }
+        {
+            CSingleLock sync(&m_ip_request_state->critical, TRUE);
+            if (m_ip_request_state->closing || m_ip_request_state->pending)
+            {
+                *pResult = 0;
+                return;
+            }
+            m_ip_request_state->pending = true;
+            m_ip_request_state->ready = false;
+        }
         m_info_list.SetItemText(14, 1, CCommon::LoadText(IDS_ACQUIRING, _T("...")));
         m_info_list.SetItemText(15, 1, CCommon::LoadText(IDS_ACQUIRING, _T("...")));
-        m_pGetIPThread = AfxBeginThread(GetInternetIPThreadFunc, this);
+        auto* context = new (std::nothrow) std::shared_ptr<InternetIpRequestState>(m_ip_request_state);
+        if (context == nullptr || AfxBeginThread(GetInternetIPThreadFunc, context) == nullptr)
+        {
+            delete context;
+            {
+                CSingleLock sync(&m_ip_request_state->critical, TRUE);
+                m_ip_request_state->pending = false;
+            }
+            m_info_list.SetItemText(14, 1, CCommon::LoadText(IDS_GET_FAILED));
+            m_info_list.SetItemText(15, 1, CCommon::LoadText(IDS_GET_FAILED));
+        }
     }
     *pResult = 0;
 }
