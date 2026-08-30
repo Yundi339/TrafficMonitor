@@ -101,15 +101,25 @@ bool CClassicalTaskbarDlg::IsTaskbarStructureChanged()
 
 void CClassicalTaskbarDlg::ResetTaskbarPos()
 {
-    //程序关闭的时候，把最小化窗口的width恢复回去
-    if (!m_rcMinOri.IsRectEmpty())
-    {
-        if (m_taskbar_on_top_or_bottom)
-            ::MoveWindow(m_hMin, m_left_space, 0, m_rcMinOri.Width(), m_rcMinOri.Height(), TRUE);
-        else
+    // A target-display change does not mean the old taskbar was destroyed. Restore
+    // its task-list area when the saved handles still belong to the old structure.
+    if (m_rcMinOri.IsRectEmpty() || !::IsWindow(m_hTaskbar) || !::IsWindow(m_hBar) || !::IsWindow(m_hMin))
+        return;
 
-            ::MoveWindow(m_hMin, 0, m_top_space, m_rcMinOri.Width(), m_rcMinOri.Height(), TRUE);
-    }
+    HWND current_bar = ::FindWindowEx(m_hTaskbar, 0, L"ReBarWindow32", NULL);
+    if (current_bar == NULL)
+        current_bar = ::FindWindowEx(m_hTaskbar, nullptr, L"WorkerW", NULL);
+    HWND current_min = ::FindWindowEx(current_bar, 0, L"MSTaskSwWClass", NULL);
+    if (current_min == NULL)
+        current_min = ::FindWindowEx(current_bar, 0, L"MSTaskListWClass", NULL);
+    if (current_bar != m_hBar || current_min != m_hMin)
+        return;
+
+    //程序关闭的时候，把最小化窗口的width恢复回去
+    if (m_taskbar_on_top_or_bottom)
+        ::MoveWindow(m_hMin, m_left_space, 0, m_rcMinOri.Width(), m_rcMinOri.Height(), TRUE);
+    else
+        ::MoveWindow(m_hMin, 0, m_top_space, m_rcMinOri.Width(), m_rcMinOri.Height(), TRUE);
 }
 
 HWND CClassicalTaskbarDlg::GetParentHwnd()

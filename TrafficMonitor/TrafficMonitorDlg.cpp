@@ -609,11 +609,17 @@ void CTrafficMonitorDlg::OpenTaskBarWnd()
 
 void CTrafficMonitorDlg::ScheduleTaskbarWndReopen(UINT delay_ms)
 {
-    if (m_taskbar_reopen_pending || !theApp.m_cfg_data.m_show_task_bar_wnd)
+    if (!theApp.m_cfg_data.m_show_task_bar_wnd)
+    {
+        KillTimer(RESTART_TASKBAR_TIMER);
+        m_taskbar_reopen_pending = false;
         return;
+    }
 
-    m_taskbar_reopen_pending = true;
+    // Display topology changes often arrive in bursts. Restart the timer so the
+    // taskbar is rebuilt only after the final Explorer/display notification.
     KillTimer(RESTART_TASKBAR_TIMER);
+    m_taskbar_reopen_pending = true;
     if (SetTimer(RESTART_TASKBAR_TIMER, delay_ms, [](HWND, UINT, UINT_PTR, DWORD) {
         CTrafficMonitorDlg* pThis = CTrafficMonitorDlg::Instance();
         if (pThis != nullptr && ::IsWindow(pThis->GetSafeHwnd()))
@@ -1990,7 +1996,10 @@ void CTrafficMonitorDlg::OnTimer(UINT_PTR nIDEvent)
         ++m_taskbar_timer_cnt;
         if (m_taskbar_timer_cnt % 5 == 0 && theApp.m_cfg_data.m_show_task_bar_wnd)
         {
-            bool taskbar_structure_changed = IsTaskbarWndValid() && m_tBarDlg->IsTaskbarStructureChanged();
+            const bool taskbar_wnd_valid = IsTaskbarWndValid();
+            bool taskbar_structure_changed = !taskbar_wnd_valid;
+            if (!taskbar_structure_changed)
+                taskbar_structure_changed = m_tBarDlg->IsTaskbarStructureChanged();
             static int last_taskbar_num = -1;
             if (theApp.m_taskbar_data.show_taskbar_wnd_in_secondary_display)
             {
@@ -2002,8 +2011,10 @@ void CTrafficMonitorDlg::OnTimer(UINT_PTR nIDEvent)
             else
                 last_taskbar_num = -1;
 
-            if (taskbar_structure_changed)
-                ScheduleTaskbarWndReopen();
+            // Periodic recovery must not keep postponing its own timer. Display and
+            // Explorer messages still restart the timer to provide real debouncing.
+            if (taskbar_structure_changed && !m_taskbar_reopen_pending)
+                ScheduleTaskbarWndReopen(taskbar_wnd_valid ? 500 : 2000);
         }
 
         if (IsTaskbarWndValid() && !m_taskbar_reopen_pending)
@@ -2573,6 +2584,8 @@ void CTrafficMonitorDlg::OnShowTaskBarWnd()
     else
     {
         theApp.m_cfg_data.m_show_task_bar_wnd = false;
+        KillTimer(RESTART_TASKBAR_TIMER);
+        m_taskbar_reopen_pending = false;
         //关闭任务栏窗口后，如果没有显示通知区图标，且没有显示主窗口或设置了鼠标穿透，则将通知区图标显示出来
         if (!theApp.m_general_data.show_notify_icon && theApp.IsForceShowNotifyIcon())
         {
@@ -2596,21 +2609,13 @@ void CTrafficMonitorDlg::OnAppAbout()
 //当资源管理器重启时会触发此消息
 LRESULT CTrafficMonitorDlg::OnTaskBarCreated(WPARAM wParam, LPARAM lParam)
 {
-    if (m_tBarDlg != nullptr)
+    if (theApp.m_general_data.show_notify_icon)
     {
-        CloseTaskBarWnd();
-        if (theApp.m_general_data.show_notify_icon)
-        {
-            //重新添加通知栏图标
-            ::Shell_NotifyIcon(NIM_ADD, &m_ntIcon);
-        }
-        OpenTaskBarWnd();
+        //重新添加通知栏图标
+        ::Shell_NotifyIcon(NIM_ADD, &m_ntIcon);
     }
-    else
-    {
-        if (theApp.m_general_data.show_notify_icon)
-            ::Shell_NotifyIcon(NIM_ADD, &m_ntIcon);
-    }
+    //Explorer may broadcast TaskbarCreated before all child windows are ready.
+    ScheduleTaskbarWndReopen(800);
     return LRESULT();
 }
 
@@ -2882,6 +2887,8 @@ afx_msg LRESULT CTrafficMonitorDlg::OnDpichanged(WPARAM wParam, LPARAM lParam)
 afx_msg LRESULT CTrafficMonitorDlg::OnTaskbarWndClosed(WPARAM wParam, LPARAM lParam)
 {
     theApp.m_cfg_data.m_show_task_bar_wnd = false;
+    KillTimer(RESTART_TASKBAR_TIMER);
+    m_taskbar_reopen_pending = false;
     //关闭任务栏窗口后，如果没有显示通知区图标，且没有显示主窗口或设置了鼠标穿透，则将通知区图标显示出来
     if (!theApp.m_general_data.show_notify_icon && theApp.IsForceShowNotifyIcon())
     {
