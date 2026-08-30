@@ -366,6 +366,9 @@ bool CHistoryTrafficFile::Load()
 	bool content_valid = true;
 	bool header_valid = false;
 	bool checksum_seen = false;
+	bool records_in_descending_order = true;
+	bool previous_record_available = false;
+	HistoryTraffic previous_record;
 	size_t expected_record_count{};
 	size_t parsed_record_count{};
 	unsigned __int64 calculated_checksum = FNV1A64_OFFSET_BASIS;
@@ -378,6 +381,10 @@ bool CHistoryTrafficFile::Load()
 		++parsed_record_count;
 		if (include_in_checksum)
 			UpdateSnapshotChecksum(calculated_checksum, line);
+		if (previous_record_available && !HistoryTraffic::DateGreater(previous_record, traffic))
+			records_in_descending_order = false;
+		previous_record = traffic;
+		previous_record_available = true;
 		if (is_first_data_line)
 		{
 			m_today_traffic = traffic;
@@ -411,12 +418,23 @@ bool CHistoryTrafficFile::Load()
 		&& parsed_record_count == expected_record_count
 		&& calculated_checksum == stored_checksum;
 
-	MormalizeData();
-	m_snapshot_rewrite_required = m_snapshot_valid && m_size != expected_record_count;
+	const bool canonical_snapshot = m_snapshot_valid
+		&& records_in_descending_order
+		&& !is_first_data_line
+		&& parsed_record_count == 1 + m_history_traffics.size()
+		&& HistoryTraffic::DateEqual(m_today_traffic, CreateTodayTraffic());
+	if (canonical_snapshot)
+		RefreshDerivedData();
+	else
+		MormalizeData();
+	m_snapshot_rewrite_required = m_snapshot_valid && !canonical_snapshot;
 	bool checkpoint_recovered = RecoverFromCheckpoint();
 	if (checkpoint_recovered)
 	{
-		MormalizeData();
+		if (m_checkpoint_full_save_required)
+			MormalizeData();
+		else
+			RefreshDerivedData();
 	}
 	return checkpoint_recovered;
 }
