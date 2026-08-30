@@ -41,6 +41,7 @@ namespace OpenHardwareMonitorApi {
         bool GetHddUsage(IHardware^ hardware, float& hdd_usage);
         bool GetCPUFreq(IHardware^ hardware, float& freq);
         bool GetCpuUsage(IHardware^ hardware, float& cpu_usage);
+        static bool TryGetSensorValue(ISensor^ sensor, float& value);
         void ResetAllValues();
         //向map中插入一个数值，如果key已经存在，则自动对新插入的key重命名
         static void InsertValueToMap(std::map<std::wstring, float>& value_map, const std::wstring& key, float value);

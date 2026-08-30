@@ -3,6 +3,7 @@
 #include "stdafx.h"
 
 #include "OpenHardwareMonitorImp.h"
+#include <cmath>
 #include <vector>
 
 namespace OpenHardwareMonitorApi
@@ -126,38 +127,64 @@ namespace OpenHardwareMonitorApi
         MonitorGlobal::Instance()->computer->IsMotherboardEnabled = enable;
     }
 
+    bool COpenHardwareMonitor::TryGetSensorValue(ISensor^ sensor, float& value)
+    {
+        if (sensor == nullptr)
+            return false;
+        auto sensor_value = sensor->Value;
+        if (!sensor_value.HasValue || !std::isfinite(sensor_value.Value))
+            return false;
+        value = sensor_value.Value;
+        return true;
+    }
+
     bool COpenHardwareMonitor::GetCPUFreq(IHardware^ hardware, float& freq) {
+        m_all_cpu_clock.clear();
         for (int i = 0; i < hardware->Sensors->Length; i++)
         {
             if (hardware->Sensors[i]->SensorType == SensorType::Clock)
             {
                 String^ name = hardware->Sensors[i]->Name;
-                if (name != L"Bus Speed")
-                    m_all_cpu_clock[ClrStringToStdWstring(name)] = Convert::ToDouble(hardware->Sensors[i]->Value);
+                float value{};
+                if (name != L"Bus Speed" && TryGetSensorValue(hardware->Sensors[i], value))
+                    m_all_cpu_clock[ClrStringToStdWstring(name)] = value;
             }
         }
+        if (m_all_cpu_clock.empty())
+            return false;
         float sum{};
-        for (auto i : m_all_cpu_clock)
-            sum += i.second;
+        for (const auto& item : m_all_cpu_clock)
+            sum += item.second;
         freq = sum / m_all_cpu_clock.size() / 1000.0;
         return true;
     }
 
     bool COpenHardwareMonitor::GetCpuUsage(IHardware^ hardware, float& cpu_usage)
     {
+        std::vector<float> core_usages;
         for (int i = 0; i < hardware->Sensors->Length; i++)
         {
             if (hardware->Sensors[i]->SensorType == SensorType::Load)
             {
+                float value{};
+                if (!TryGetSensorValue(hardware->Sensors[i], value))
+                    continue;
                 String^ name = hardware->Sensors[i]->Name;
-                if (name != L"CPU Total")
+                if (name == L"CPU Total")
                 {
-                    cpu_usage = Convert::ToDouble(hardware->Sensors[i]->Value);
+                    cpu_usage = value;
                     return true;
                 }
+                core_usages.push_back(value);
             }
         }
-        return false;
+        if (core_usages.empty())
+            return false;
+        float sum{};
+        for (float value : core_usages)
+            sum += value;
+        cpu_usage = sum / core_usages.size();
+        return true;
     }
 
     bool COpenHardwareMonitor::GetHardwareTemperature(IHardware^ hardware, float& temperature)
@@ -182,7 +209,9 @@ namespace OpenHardwareMonitorApi
             //找到温度传感器
             if (hardware->Sensors[i]->SensorType == SensorType::Temperature)
             {
-                float cur_temperture = Convert::ToDouble(hardware->Sensors[i]->Value);
+                float cur_temperture{};
+                if (!TryGetSensorValue(hardware->Sensors[i], cur_temperture))
+                    continue;
                 all_temperature.push_back(cur_temperture);
                 if (hardware->Sensors[i]->Name == temperature_name) //如果找到了名称为temperature_name的温度传感器，则将温度保存到core_temperature里
                     core_temperature = cur_temperture;
@@ -220,9 +249,12 @@ namespace OpenHardwareMonitorApi
             //找到温度传感器
             if (hardware->Sensors[i]->SensorType == SensorType::Temperature)
             {
+                float value{};
+                if (!TryGetSensorValue(hardware->Sensors[i], value))
+                    continue;
                 String^ name = hardware->Sensors[i]->Name;
                 //保存每个CPU传感器的温度
-                m_all_cpu_temperature[ClrStringToStdWstring(name)] = Convert::ToDouble(hardware->Sensors[i]->Value);
+                m_all_cpu_temperature[ClrStringToStdWstring(name)] = value;
             }
         }
         //计算平均温度
@@ -239,12 +271,16 @@ namespace OpenHardwareMonitorApi
     bool COpenHardwareMonitor::GetGpuUsage(IHardware^ hardware, float& gpu_usage)
     {
         float usage_max = 0;
+        bool usage_found = false;
         for (int i = 0; i < hardware->Sensors->Length; i++)
         {
             //找到负载
             if (hardware->Sensors[i]->SensorType == SensorType::Load)
             {
-                float cur_gpu_usage = Convert::ToDouble(hardware->Sensors[i]->Value);
+                float cur_gpu_usage{};
+                if (!TryGetSensorValue(hardware->Sensors[i], cur_gpu_usage))
+                    continue;
+                usage_found = true;
                 if (hardware->Sensors[i]->Name == L"GPU Core")
                 {
                     gpu_usage = cur_gpu_usage;
@@ -256,6 +292,8 @@ namespace OpenHardwareMonitorApi
                     usage_max = cur_gpu_usage;
             }
         }
+        if (!usage_found)
+            return false;
         gpu_usage = usage_max;
         return true;
     }
@@ -269,8 +307,7 @@ namespace OpenHardwareMonitorApi
             {
                 if (hardware->Sensors[i]->Name == L"Total Activity")
                 {
-                    hdd_usage = Convert::ToDouble(hardware->Sensors[i]->Value);
-                    return true;
+                    return TryGetSensorValue(hardware->Sensors[i], hdd_usage);
                 }
             }
         }
@@ -300,6 +337,8 @@ namespace OpenHardwareMonitorApi
         m_gpu_intel_usage = -1;
         m_all_hdd_temperature.clear();
         m_all_hdd_usage.clear();
+        m_all_cpu_temperature.clear();
+        m_all_cpu_clock.clear();
         m_cpu_freq = -1;
         m_cpu_usage = -1;
     }

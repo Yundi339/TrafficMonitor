@@ -195,6 +195,28 @@ jobs:
               $versionInfo.ProductVersion -ne $env:TRAFFICMONITOR_PE_VERSION) {
             throw "Built executable version '$($versionInfo.FileVersion)' does not match '$env:TRAFFICMONITOR_PE_VERSION'."
           }
+          $requiredRuntimeFiles = @(
+            'LibreHardwareMonitorLib.dll',
+            'BlackSharp.Core.dll',
+            'DiskInfoToolkit.dll',
+            'HidSharp.dll',
+            'RAMSPDToolkit-NDD.dll',
+            'System.Buffers.dll',
+            'System.Memory.dll',
+            'System.Numerics.Vectors.dll',
+            'System.Runtime.CompilerServices.Unsafe.dll'
+          )
+          foreach ($fileName in $requiredRuntimeFiles) {
+            $runtimePath = Join-Path $env:OUTPUT_DIR $fileName
+            if (!(Test-Path -LiteralPath $runtimePath)) {
+              throw "Required Full runtime dependency was not found: $runtimePath"
+            }
+          }
+          $hardwareVersion = [Diagnostics.FileVersionInfo]::GetVersionInfo(
+            (Join-Path $env:OUTPUT_DIR 'LibreHardwareMonitorLib.dll')).FileVersion
+          if ($hardwareVersion -ne '0.9.6.0') {
+            throw "Unexpected LibreHardwareMonitor version '$hardwareVersion'."
+          }
           "Built Full x64 $executable with version ${{ needs.prepare.outputs.version }}" >> $env:GITHUB_STEP_SUMMARY
 
       - name: Upload program files
