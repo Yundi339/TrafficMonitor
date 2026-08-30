@@ -10,6 +10,14 @@ on:
         description: 'Build version (leave empty to append the workflow run number)'
         required: false
         type: string
+      edition:
+        description: 'Edition to build'
+        required: true
+        default: 'Lite'
+        type: choice
+        options:
+          - 'Lite'
+          - 'Full'
 
 permissions:
   contents: read
@@ -76,6 +84,7 @@ jobs:
   build:
     name: Build ${{ matrix.name }}
     needs: prepare
+    if: ${{ github.event_name != 'workflow_dispatch' || inputs.edition != 'Full' }}
     runs-on: windows-2022
     strategy:
       fail-fast: false
@@ -143,3 +152,64 @@ jobs:
           name: TrafficMonitor_${{ needs.prepare.outputs.version }}_${{ matrix.name }}_Lite_pdb_run-${{ github.run_number }}-${{ github.run_attempt }}
           if-no-files-found: error
           path: ${{ matrix.output_dir }}/*.pdb
+
+  build_full_x64:
+    name: Build x64 Full
+    needs: prepare
+    if: ${{ github.event_name == 'workflow_dispatch' && inputs.edition == 'Full' }}
+    runs-on: windows-2022
+    steps:
+      - uses: actions/checkout@v7
+
+      - name: Stamp build version
+        shell: pwsh
+        env:
+          BUILD_VERSION: ${{ needs.prepare.outputs.version }}
+        run: |
+          & .\.github\scripts\Set-ProjectVersion.ps1 -Version $env:BUILD_VERSION
+
+      - name: Add MSBuild to PATH
+        uses: microsoft/setup-msbuild@v3
+
+      - name: Build Full edition
+        shell: pwsh
+        run: |
+          msbuild TrafficMonitor.sln `
+            /m `
+            /t:Build `
+            /p:Configuration="Release" `
+            /p:Platform="x64" `
+            /p:PlatformToolset=v143
+
+      - name: Verify build outputs
+        shell: pwsh
+        env:
+          OUTPUT_DIR: Bin/x64/Release
+        run: |
+          $executable = Join-Path $env:OUTPUT_DIR 'TrafficMonitor.exe'
+          if (!(Test-Path -LiteralPath $executable)) {
+            throw "Expected build output was not found: $executable"
+          }
+          $versionInfo = [Diagnostics.FileVersionInfo]::GetVersionInfo($executable)
+          if ($versionInfo.FileVersion -ne $env:TRAFFICMONITOR_PE_VERSION -or
+              $versionInfo.ProductVersion -ne $env:TRAFFICMONITOR_PE_VERSION) {
+            throw "Built executable version '$($versionInfo.FileVersion)' does not match '$env:TRAFFICMONITOR_PE_VERSION'."
+          }
+          "Built Full x64 $executable with version ${{ needs.prepare.outputs.version }}" >> $env:GITHUB_STEP_SUMMARY
+
+      - name: Upload program files
+        uses: actions/upload-artifact@v7
+        with:
+          name: TrafficMonitor_${{ needs.prepare.outputs.version }}_x64_Full_run-${{ github.run_number }}-${{ github.run_attempt }}
+          if-no-files-found: error
+          path: |
+            Bin/x64/Release/TrafficMonitor.exe
+            Bin/x64/Release/*.dll
+            Bin/x64/Release/*.xml
+
+      - name: Upload debug symbols
+        uses: actions/upload-artifact@v7
+        with:
+          name: TrafficMonitor_${{ needs.prepare.outputs.version }}_x64_Full_pdb_run-${{ github.run_number }}-${{ github.run_attempt }}
+          if-no-files-found: error
+          path: Bin/x64/Release/*.pdb
