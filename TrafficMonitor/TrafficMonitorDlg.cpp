@@ -29,6 +29,25 @@ namespace
     constexpr UINT TASKBAR_NORMAL_TIMER_INTERVAL_MS = 500;
     constexpr ULONGLONG TASKBAR_STRUCTURE_CHECK_INTERVAL_MS = 2000;
     constexpr ULONGLONG TASKBAR_DPI_CHECK_INTERVAL_MS = 1000;
+    constexpr unsigned int CONNECTION_UI_REQUEST_REINITIALIZE = 1u << 0;
+    constexpr unsigned int CONNECTION_UI_REQUEST_AUTO_SELECT = 1u << 1;
+
+    DWORD AcquireIfTableSnapshot(std::vector<ULONGLONG>& storage, const MIB_IFTABLE*& table)
+    {
+        DWORD size = (std::max)(static_cast<DWORD>(sizeof(MIB_IFTABLE)),
+            static_cast<DWORD>(storage.size() * sizeof(ULONGLONG)));
+        storage.resize((size + sizeof(ULONGLONG) - 1) / sizeof(ULONGLONG));
+        auto* mutable_table = reinterpret_cast<MIB_IFTABLE*>(storage.data());
+        DWORD result = GetIfTable(mutable_table, &size, FALSE);
+        if (result == ERROR_INSUFFICIENT_BUFFER)
+        {
+            storage.resize((size + sizeof(ULONGLONG) - 1) / sizeof(ULONGLONG));
+            mutable_table = reinterpret_cast<MIB_IFTABLE*>(storage.data());
+            result = GetIfTable(mutable_table, &size, FALSE);
+        }
+        table = result == NO_ERROR ? mutable_table : nullptr;
+        return result;
+    }
 }
 
 
@@ -131,6 +150,7 @@ BEGIN_MESSAGE_MAP(CTrafficMonitorDlg, CDialog)
     ON_MESSAGE(WM_DPICHANGED, &CTrafficMonitorDlg::OnDpichanged)
     ON_MESSAGE(WM_TASKBAR_WND_CLOSED, &CTrafficMonitorDlg::OnTaskbarWndClosed)
     ON_MESSAGE(WM_MONITOR_INFO_UPDATED, &CTrafficMonitorDlg::OnMonitorInfoUpdated)
+    ON_MESSAGE(WM_CONNECTION_STATE_REFRESH, &CTrafficMonitorDlg::OnConnectionStateRefresh)
     ON_MESSAGE(WM_DISPLAYCHANGE, &CTrafficMonitorDlg::OnDisplaychange)
     ON_WM_EXITSIZEMOVE()
     ON_COMMAND(ID_PLUGIN_MANAGE, &CTrafficMonitorDlg::OnPluginManage)
@@ -400,27 +420,29 @@ void CTrafficMonitorDlg::AutoSelect()
     }
     theApp.m_cfg_data.m_connection_name = GetConnection(m_connection_selected).description_2;
     m_connection_change_flag = true;
+    PublishConnectionAcquisitionState();
 }
 
 void CTrafficMonitorDlg::IniConnection()
 {
-    //为m_pIfTable开辟所需大小的内存
+    //UI线程拥有共享网卡表；先在局部RAII缓冲中完整获取，再一次性替换。
+    std::vector<ULONGLONG> if_table_storage;
+    const MIB_IFTABLE* if_table{};
+    const DWORD table_result = AcquireIfTableSnapshot(if_table_storage, if_table);
     free(m_pIfTable);
-    m_dwSize = sizeof(MIB_IFTABLE);
-    m_pIfTable = (MIB_IFTABLE*)malloc(m_dwSize);
-    int rtn;
-    rtn = GetIfTable(m_pIfTable, &m_dwSize, FALSE);
-    if (rtn == ERROR_INSUFFICIENT_BUFFER)	//如果函数返回值为ERROR_INSUFFICIENT_BUFFER，说明m_pIfTable的大小不够
+    m_pIfTable = nullptr;
+    if (table_result == NO_ERROR)
     {
-        free(m_pIfTable);
-        m_pIfTable = (MIB_IFTABLE*)malloc(m_dwSize);	//用新的大小重新开辟一块内存
+        const size_t table_bytes = if_table_storage.size() * sizeof(ULONGLONG);
+        m_pIfTable = static_cast<MIB_IFTABLE*>(malloc(table_bytes));
+        if (m_pIfTable != nullptr)
+            memcpy(m_pIfTable, if_table, table_bytes);
     }
-    GetIfTable(m_pIfTable, &m_dwSize, FALSE);
 
     //获取当前所有的连接，并保存到m_connections容器中
-    if (!theApp.m_general_data.show_all_interface)
+    m_connections.clear();
+    if (m_pIfTable != nullptr && !theApp.m_general_data.show_all_interface)
     {
-        m_connections.clear();
         vector<NetWorkConection> connections;
         CAdapterCommon::GetAdapterInfo(connections);
         for (const auto& item : connections)
@@ -430,9 +452,18 @@ void CTrafficMonitorDlg::IniConnection()
         }
         CAdapterCommon::GetIfTableInfo(m_connections, m_pIfTable);
     }
-    else
+    else if (m_pIfTable != nullptr)
     {
         CAdapterCommon::GetAllIfTableInfo(m_connections, m_pIfTable);
+    }
+    else
+    {
+        CString info;
+        if (table_result == NO_ERROR)
+            info = _T("Unable to allocate the shared interface table.");
+        else
+            info.Format(_T("Unable to refresh the shared interface table (error %lu)."), table_result);
+        CCommon::WriteLogRateLimited(info, theApp.m_log_path.c_str(), _T("refresh-shared-if-table"));
     }
 
     //如果在设置了“显示所有网络连接”时设置了“选择全部”，则改为“自动选择”
@@ -456,7 +487,8 @@ void CTrafficMonitorDlg::IniConnection()
             log_str += _T("\n");
         }
         log_str += _T("IfTable:\n");
-        for (size_t i{}; i < m_pIfTable->dwNumEntries; i++)
+        const DWORD table_entry_count = m_pIfTable == nullptr ? 0 : m_pIfTable->dwNumEntries;
+        for (size_t i{}; i < table_entry_count; i++)
         {
             log_str += CCommon::IntToString(i);
             log_str += _T(" ");
@@ -503,6 +535,7 @@ void CTrafficMonitorDlg::IniConnection()
 
     m_restart_cnt++;    //记录初始化次数
     m_connection_change_flag = true;
+    PublishConnectionAcquisitionState();
 }
 
 MIB_IFROW CTrafficMonitorDlg::GetConnectIfTable(int connection_index)
@@ -1244,33 +1277,34 @@ static int GetMonitorTimerCount(int second)
 
 void CTrafficMonitorDlg::DoMonitorAcquisition()
 {
-    //获取网络连接速度
-    int rtn{};
-    auto getLfTable = [&]() {
-        __try
+    {
+        CSingleLock sync(&m_connection_snapshot_critical, TRUE);
+        if (m_monitor_connection_state_version != m_connection_acquisition_state_version)
         {
-            rtn = GetIfTable(m_pIfTable, &m_dwSize, FALSE);
+            m_monitor_connection_state = m_connection_acquisition_state;
+            m_monitor_connection_state_version = m_connection_acquisition_state_version;
         }
-        __except (EXCEPTION_EXECUTE_HANDLER)
-        {
-            free(m_pIfTable);
-            m_dwSize = sizeof(MIB_IFTABLE);
-            m_pIfTable = (MIB_IFTABLE*)malloc(m_dwSize);
-            rtn = GetIfTable(m_pIfTable, &m_dwSize, FALSE);
-            if (rtn == ERROR_INSUFFICIENT_BUFFER)	//如果函数返回值为ERROR_INSUFFICIENT_BUFFER，说明m_pIfTable的大小不够
-            {
-                free(m_pIfTable);
-                m_pIfTable = (MIB_IFTABLE*)malloc(m_dwSize);	//用新的大小重新开辟一块内存
-            }
-            GetIfTable(m_pIfTable, &m_dwSize, FALSE);
-        }
+    }
+    const ConnectionAcquisitionState& connection_state = m_monitor_connection_state;
+
+    //每轮使用局部网卡表，工作线程不再修改UI线程拥有的m_pIfTable。
+    const MIB_IFTABLE* if_table{};
+    const DWORD rtn = AcquireIfTableSnapshot(m_monitor_if_table_storage, if_table);
+    auto get_if_row = [&](int connection_index) {
+        MIB_IFROW empty_row{};
+        if (if_table == nullptr || connection_index < 0
+            || connection_index >= static_cast<int>(connection_state.connections.size()))
+            return empty_row;
+
+        const int table_index = connection_state.connections[connection_index].index;
+        if (table_index < 0 || table_index >= static_cast<int>(if_table->dwNumEntries))
+            return empty_row;
+        return if_table->table[table_index];
     };
 
-    getLfTable();
-
-    if (!theApp.m_cfg_data.m_select_all)        //获取当前选中连接的网速
+    if (!connection_state.select_all)        //获取当前选中连接的网速
     {
-        auto table = GetConnectIfTable(m_connection_selected);
+        auto table = get_if_row(connection_state.selected);
         m_in_bytes = table.dwInOctets;
         m_out_bytes = table.dwOutOctets;
     }
@@ -1278,12 +1312,9 @@ void CTrafficMonitorDlg::DoMonitorAcquisition()
     {
         m_in_bytes = 0;
         m_out_bytes = 0;
-        for (size_t i{}; i < m_connections.size(); i++)
+        for (size_t i{}; i < connection_state.connections.size(); i++)
         {
-            auto table = GetConnectIfTable(i);
-            //if (i > 0 && m_pIfTable->table[m_connections[i].index].dwInOctets == m_pIfTable->table[m_connections[i - 1].index].dwInOctets
-            //  && m_pIfTable->table[m_connections[i].index].dwOutOctets == m_pIfTable->table[m_connections[i - 1].index].dwOutOctets)
-            //  continue;       //连接列表中可能会有相同的连接，统计所有连接的网速时，忽略掉已发送和已接收字节数完全相同的连接
+            auto table = get_if_row(static_cast<int>(i));
             m_in_bytes += table.dwInOctets;
             m_out_bytes += table.dwOutOctets;
         }
@@ -1311,12 +1342,18 @@ void CTrafficMonitorDlg::DoMonitorAcquisition()
     //  cur_out_speed = 0;
 
     //计算两次获取网速的时间间隔
-    static ULONGLONG last_net_speed_time = 0;
-    ULONGLONG net_speed_time = CCommon::GetCurrentTimeSinceEpochMilliseconds();
+    static ULONGLONG last_net_speed_tick{};
+    const ULONGLONG net_speed_tick = GetTickCount64();
     int time_span = theApp.m_general_data.monitor_time_span;
-    if (last_net_speed_time != 0)
-        time_span = static_cast<int>(net_speed_time - last_net_speed_time);
-    last_net_speed_time = net_speed_time;
+    if (last_net_speed_tick != 0)
+    {
+        const ULONGLONG elapsed = net_speed_tick - last_net_speed_tick;
+        if (elapsed > 0 && elapsed <= INT_MAX)
+            time_span = static_cast<int>(elapsed);
+    }
+    last_net_speed_tick = net_speed_tick;
+    if (time_span <= 0)
+        time_span = 1;
 
     //将当前监控时间间隔的流量转换成每秒时间间隔内的流量
     m_monitor_working_snapshot.in_speed = static_cast<unsigned __int64>(cur_in_speed * 1000 / time_span);
@@ -1326,7 +1363,7 @@ void CTrafficMonitorDlg::DoMonitorAcquisition()
     m_last_out_bytes = m_out_bytes;
 
     //处于自动选择状态时，如果连续30秒没有网速，则可能自动选择的网络不对，此时执行一次自动选择
-    if (theApp.m_cfg_data.m_auto_select)
+    if (connection_state.auto_select)
     {
         if (cur_in_speed == 0 && cur_out_speed == 0)
             m_zero_speed_cnt++;
@@ -1334,7 +1371,7 @@ void CTrafficMonitorDlg::DoMonitorAcquisition()
             m_zero_speed_cnt = 0;
         if (m_zero_speed_cnt >= GetMonitorTimerCount(30))
         {
-            AutoSelect();
+            RequestConnectionUiAction(CONNECTION_UI_REQUEST_AUTO_SELECT);
             m_zero_speed_cnt = 0;
         }
     }
@@ -1389,37 +1426,47 @@ void CTrafficMonitorDlg::DoMonitorAcquisition()
         }
     }
 
-    if (rtn == ERROR_INSUFFICIENT_BUFFER)
+    if (rtn != NO_ERROR)
     {
-        IniConnection();
-        CString info = CCommon::LoadText(IDS_INSUFFICIENT_BUFFER);
-        info.Replace(_T("<%cnt%>"), CCommon::IntToString(m_restart_cnt));
-        CCommon::WriteLogRateLimited(info, theApp.m_log_path.c_str(), _T("get-if-table-insufficient-buffer"));
+        RequestConnectionUiAction(CONNECTION_UI_REQUEST_REINITIALIZE);
+        CString info;
+        if (rtn == ERROR_INSUFFICIENT_BUFFER)
+        {
+            info = CCommon::LoadText(IDS_INSUFFICIENT_BUFFER);
+            info.Replace(_T("<%cnt%>"), CCommon::IntToString(connection_state.restart_count));
+        }
+        else
+        {
+            info.Format(_T("GetIfTable failed with error %lu."), rtn);
+        }
+        CCommon::WriteLogRateLimited(info, theApp.m_log_path.c_str(), _T("get-if-table-error"));
     }
 
     if (m_monitor_time_cnt % GetMonitorTimerCount(3) == GetMonitorTimerCount(3) - 1)
     {
         //重新获取当前连接数量
         static DWORD last_interface_num = -1;
-        DWORD interface_num;
-        GetNumberOfInterfaces(&interface_num);
-        if (last_interface_num != -1 && interface_num != last_interface_num)    //如果连接数发生变化，则重新初始化连接
+        DWORD interface_num{};
+        const DWORD interface_count_result = GetNumberOfInterfaces(&interface_num);
+        if (interface_count_result == NO_ERROR
+            && last_interface_num != -1 && interface_num != last_interface_num)    //如果连接数发生变化，则重新初始化连接
         {
             if (theApp.m_debug_log)
             {
                 CString info = CCommon::LoadText(IDS_CONNECTION_NUM_CHANGED);
                 info.Replace(_T("<%before%>"), CCommon::IntToString(last_interface_num));
                 info.Replace(_T("<%after%>"), CCommon::IntToString(interface_num));
-                info.Replace(_T("<%cnt%>"), CCommon::IntToString(m_restart_cnt + 1));
+                info.Replace(_T("<%cnt%>"), CCommon::IntToString(connection_state.restart_count + 1));
                 CCommon::WriteLog(info, theApp.m_log_path.c_str());
             }
-            IniConnection();
-            last_interface_num = interface_num;
+            RequestConnectionUiAction(CONNECTION_UI_REQUEST_REINITIALIZE);
         }
+        if (interface_count_result == NO_ERROR)
+            last_interface_num = interface_num;
 
-        string descr;
-        descr = (const char*)GetConnectIfTable(m_connection_selected).bDescr;
-        if (descr != theApp.m_cfg_data.m_connection_name)
+        const auto selected_row = get_if_row(connection_state.selected);
+        const string descr = (const char*)selected_row.bDescr;
+        if (rtn == NO_ERROR && !connection_state.connections.empty() && descr != connection_state.connection_name)
         {
             //写入额外的调试信息
             if (theApp.m_debug_log)
@@ -1429,14 +1476,14 @@ void CTrafficMonitorDlg::DoMonitorAcquisition()
                 log_str += _T("IfTable description: ");
                 log_str += descr.c_str();
                 log_str += _T("\r\nm_connection_name: ");
-                log_str += theApp.m_cfg_data.m_connection_name.c_str();
+                log_str += connection_state.connection_name.c_str();
                 CCommon::WriteLog(log_str, (theApp.m_config_dir + L".\\connections.log").c_str());
             }
 
-            IniConnection();
+            RequestConnectionUiAction(CONNECTION_UI_REQUEST_REINITIALIZE);
             CString info = CCommon::LoadText(IDS_CONNECTION_NOT_MATCH);
-            info.Replace(_T("<%cnt%>"), CCommon::IntToString(m_restart_cnt));
-            CCommon::WriteLog(info, theApp.m_log_path.c_str());
+            info.Replace(_T("<%cnt%>"), CCommon::IntToString(connection_state.restart_count));
+            CCommon::WriteLogRateLimited(info, theApp.m_log_path.c_str(), _T("connection-name-mismatch"));
         }
     }
 
@@ -1625,6 +1672,31 @@ void CTrafficMonitorDlg::DoMonitorAcquisition()
 
     PublishMonitorSnapshot();
     PostMonitorInfoUpdate();
+}
+
+void CTrafficMonitorDlg::PublishConnectionAcquisitionState()
+{
+    ConnectionAcquisitionState state;
+    state.connections = m_connections;
+    state.selected = m_connection_selected;
+    state.select_all = theApp.m_cfg_data.m_select_all;
+    state.auto_select = theApp.m_cfg_data.m_auto_select;
+    state.connection_name = theApp.m_cfg_data.m_connection_name;
+    state.restart_count = m_restart_cnt;
+
+    CSingleLock sync(&m_connection_snapshot_critical, TRUE);
+    m_connection_acquisition_state = std::move(state);
+    ++m_connection_acquisition_state_version;
+}
+
+void CTrafficMonitorDlg::RequestConnectionUiAction(unsigned int action)
+{
+    if (m_is_thread_exit.load(std::memory_order_acquire))
+        return;
+
+    const unsigned int previous = m_connection_ui_request_flags.fetch_or(action, std::memory_order_acq_rel);
+    if (previous == 0 && !PostMessage(WM_CONNECTION_STATE_REFRESH))
+        m_connection_ui_request_flags.store(0, std::memory_order_release);
 }
 
 void CTrafficMonitorDlg::PublishMonitorSnapshot()
@@ -2220,7 +2292,10 @@ void CTrafficMonitorDlg::OnNetworkInfo()
 {
     // TODO: 在此添加命令处理程序代码
     //弹出“连接详情”对话框
-    CNetworkInfoDlg aDlg(m_connections, m_pIfTable->table, m_connection_selected);
+    vector<MIB_IFROW> if_rows;
+    if (m_pIfTable != nullptr)
+        if_rows.assign(m_pIfTable->table, m_pIfTable->table + m_pIfTable->dwNumEntries);
+    CNetworkInfoDlg aDlg(m_connections, std::move(if_rows), m_connection_selected);
     ////向CNetworkInfoDlg类传递自启动以来已发送和接收的字节数
     //aDlg.m_in_bytes = m_pIfTable->table[m_connections[m_connection_selected].index].dwInOctets - m_connections[m_connection_selected].in_bytes;
     //aDlg.m_out_bytes = m_pIfTable->table[m_connections[m_connection_selected].index].dwOutOctets - m_connections[m_connection_selected].out_bytes;
@@ -2309,6 +2384,7 @@ BOOL CTrafficMonitorDlg::OnCommand(WPARAM wParam, LPARAM lParam)
         theApp.m_cfg_data.m_select_all = true;
         theApp.m_cfg_data.m_auto_select = false;
         m_connection_change_flag = true;
+        PublishConnectionAcquisitionState();
     }
     //选择了“选择网络连接”子菜单中项目时的处理
     if (uMsg == ID_SELETE_CONNECTION)   //选择了“自动选择”菜单项
@@ -2318,6 +2394,7 @@ BOOL CTrafficMonitorDlg::OnCommand(WPARAM wParam, LPARAM lParam)
         theApp.m_cfg_data.m_select_all = false;
         theApp.SaveConfig();
         m_connection_change_flag = true;
+        PublishConnectionAcquisitionState();
     }
     if (uMsg > ID_SELECT_ALL_CONNECTION && uMsg <= ID_SELECT_ALL_CONNECTION + m_connections.size()) //选择了一个网络连接
     {
@@ -2328,6 +2405,7 @@ BOOL CTrafficMonitorDlg::OnCommand(WPARAM wParam, LPARAM lParam)
         theApp.m_cfg_data.m_select_all = false;
         theApp.SaveConfig();
         m_connection_change_flag = true;
+        PublishConnectionAcquisitionState();
     }
 #ifdef DEBUG
     if (uMsg == ID_CMD_TEST)
@@ -3051,6 +3129,19 @@ afx_msg LRESULT CTrafficMonitorDlg::OnMonitorInfoUpdated(WPARAM wParam, LPARAM l
     //更新任务栏窗口鼠标提示
     if (IsTaskbarWndValid())
         m_tBarDlg->UpdateToolTips();
+    return 0;
+}
+
+afx_msg LRESULT CTrafficMonitorDlg::OnConnectionStateRefresh(WPARAM wParam, LPARAM lParam)
+{
+    const unsigned int actions = m_connection_ui_request_flags.exchange(0, std::memory_order_acq_rel);
+    if (m_is_thread_exit.load(std::memory_order_acquire))
+        return 0;
+
+    if ((actions & CONNECTION_UI_REQUEST_REINITIALIZE) != 0)
+        IniConnection();
+    else if ((actions & CONNECTION_UI_REQUEST_AUTO_SELECT) != 0)
+        AutoSelect();
     return 0;
 }
 

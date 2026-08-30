@@ -59,8 +59,7 @@ protected:
     CTaskBarDlg* m_tBarDlg{};     //任务栏窗口的指针
 
     vector<NetWorkConection> m_connections; //保存获取到的要显示到“选择网卡”菜单项中的所有网络连接
-    MIB_IFTABLE* m_pIfTable;
-    DWORD m_dwSize{};	//m_pIfTable的大小
+    MIB_IFTABLE* m_pIfTable{};
     int m_connection_selected{ 0 }; //要显示流量的连接的序号
     unsigned __int64 m_in_bytes{};        //当前已接收的字节数
     unsigned __int64 m_out_bytes{};   //当前已发送的字节数
@@ -156,8 +155,20 @@ protected:
         int hdd_usage{ -1 };
     };
 
+    struct ConnectionAcquisitionState
+    {
+        vector<NetWorkConection> connections;
+        int selected{};
+        bool select_all{};
+        bool auto_select{};
+        string connection_name;
+        int restart_count{ -1 };
+    };
+
     void DoMonitorAcquisition();    //获取一次监控信息
     void PublishMonitorSnapshot(); //将完整采集快照发布给UI线程
+    void PublishConnectionAcquisitionState(); //UI线程发布只读连接快照
+    void RequestConnectionUiAction(unsigned int action); //工作线程请求UI更新连接状态
     void QueueMonitorErrorNotification(const CString& error_message); //将采集错误交给UI线程以非模态方式提示
     void PostMonitorInfoUpdate(); //异步合并监控信息更新消息
     static UINT MonitorThreadCallback(LPVOID dwUser);   //获取监控信息的线程函数
@@ -168,6 +179,13 @@ protected:
     MonitorSnapshot m_monitor_working_snapshot; //仅由采集线程更新
     MonitorSnapshot m_pending_monitor_snapshot; //等待UI线程一次性应用
     bool m_monitor_snapshot_ready{};
+    CCriticalSection m_connection_snapshot_critical;
+    ConnectionAcquisitionState m_connection_acquisition_state;
+    ULONGLONG m_connection_acquisition_state_version{};
+    ConnectionAcquisitionState m_monitor_connection_state; //仅由采集线程读取
+    ULONGLONG m_monitor_connection_state_version{};
+    vector<ULONGLONG> m_monitor_if_table_storage; //采集线程复用的局部网卡表缓冲
+    std::atomic_uint m_connection_ui_request_flags{};
     CCriticalSection m_monitor_error_critical; //同步采集线程和UI线程间的错误消息
     CString m_pending_monitor_error;
     CString m_last_notified_monitor_error;
@@ -305,6 +323,7 @@ protected:
     afx_msg LRESULT OnDpichanged(WPARAM wParam, LPARAM lParam);
     afx_msg LRESULT OnTaskbarWndClosed(WPARAM wParam, LPARAM lParam);
     afx_msg LRESULT OnMonitorInfoUpdated(WPARAM wParam, LPARAM lParam);
+    afx_msg LRESULT OnConnectionStateRefresh(WPARAM wParam, LPARAM lParam);
     afx_msg LRESULT OnDisplaychange(WPARAM wParam, LPARAM lParam);
     afx_msg LRESULT OnReopenTaksbarWnd(WPARAM wParam, LPARAM lParam);
 public:
