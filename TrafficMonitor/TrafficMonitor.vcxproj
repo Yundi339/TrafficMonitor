@@ -801,6 +801,7 @@
     <ClInclude Include="HighResolutionTimer.h" />
     <ClInclude Include="HistoryTrafficCalendarDlg.h" />
     <ClInclude Include="HistoryTrafficFile.h" />
+    <ClInclude Include="HistoryTrafficRetrySchedule.h" />
     <ClInclude Include="HistoryTrafficListDlg.h" />
     <ClInclude Include="HResultException.h" />
     <ClInclude Include="IDrawCommon.h" />

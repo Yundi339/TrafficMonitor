@@ -7,6 +7,7 @@
 #include "PluginUpdateHelper.h"
 #include "MessageDlg.h"
 #include "HistoryTrafficFile.h"
+#include "HistoryTrafficRetrySchedule.h"
 
 ////////////////////////////////////////////////////////////////////////////////////////////////////////////////
 static void TestHttpQequest()
@@ -207,6 +208,36 @@ static void TestHistoryTrafficCheckpointSchedule()
     ASSERT(schedule.ShouldSave(501, 100));
 }
 
+static void TestHistoryTrafficFullSaveRetrySchedule()
+{
+    CHistoryTrafficFullSaveRetrySchedule schedule;
+    ULONGLONG attempt_tick = 1000;
+    schedule.Reset(attempt_tick);
+
+    ASSERT(schedule.GetRetryInterval() == 15ull * 1000);
+    ASSERT(!schedule.ShouldRetry(attempt_tick + schedule.GetRetryInterval() - 1));
+
+    const ULONGLONG expected_intervals[] = {
+        30ull * 1000,
+        60ull * 1000,
+        120ull * 1000,
+        240ull * 1000,
+        300ull * 1000,
+        300ull * 1000
+    };
+    for (ULONGLONG expected_interval : expected_intervals)
+    {
+        attempt_tick += schedule.GetRetryInterval();
+        ASSERT(schedule.ShouldRetry(attempt_tick));
+        schedule.MarkFailed(attempt_tick);
+        ASSERT(schedule.GetRetryInterval() == expected_interval);
+    }
+
+    schedule.Reset(attempt_tick);
+    ASSERT(schedule.GetRetryInterval() == CHistoryTrafficFullSaveRetrySchedule::INITIAL_INTERVAL_MS);
+    ASSERT(schedule.ShouldRetry(0));
+}
+
 ///////////////////////////////////////////////////////////////////////////////////////////////////////////////////
 CTest::CTest()
 {
@@ -227,6 +258,7 @@ void CTest::Test()
     TestPluginVersion();
     TestHistoryTrafficPersistence();
     TestHistoryTrafficCheckpointSchedule();
+    TestHistoryTrafficFullSaveRetrySchedule();
 }
 
 void CTest::TestCommand()

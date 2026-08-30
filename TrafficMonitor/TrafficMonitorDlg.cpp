@@ -859,7 +859,7 @@ void CTrafficMonitorDlg::LoadHistoryTraffic()
     m_monitor_working_snapshot.today_down_traffic = theApp.m_today_down_traffic;
     const ULONGLONG current_tick = GetTickCount64();
     m_history_checkpoint_schedule.Reset(m_history_traffic.GetTodayTraffic().kBytes(), current_tick);
-    m_last_history_full_save_attempt_tick = current_tick;
+    m_history_full_save_retry_schedule.Reset(current_tick);
 }
 
 void CTrafficMonitorDlg::_OnOptions(int tab, CWnd* pParent)
@@ -1453,9 +1453,9 @@ void CTrafficMonitorDlg::DoMonitorAcquisition()
             m_history_traffic.OnDateChanged();
             m_monitor_working_snapshot.today_up_traffic = 0;
             m_monitor_working_snapshot.today_down_traffic = 0;
-            m_last_history_full_save_attempt_tick = checkpoint_tick;
             m_history_rotate_backup_on_full_save = true;
             m_history_full_save_pending = !SaveHistoryTrafficFull(true);
+            m_history_full_save_retry_schedule.Reset(GetTickCount64());
             m_history_checkpoint_schedule.Reset(0, checkpoint_tick);
         }
 
@@ -1468,17 +1468,18 @@ void CTrafficMonitorDlg::DoMonitorAcquisition()
         const unsigned __int64 current_kbytes = m_history_traffic.GetTodayTraffic().kBytes();
         if (m_history_full_save_pending)
         {
-            const ULONGLONG elapsed = checkpoint_tick >= m_last_history_full_save_attempt_tick
-                ? checkpoint_tick - m_last_history_full_save_attempt_tick
-                : CHistoryTrafficCheckpointSchedule::MIN_INTERVAL_MS;
-            if (elapsed >= CHistoryTrafficCheckpointSchedule::MIN_INTERVAL_MS)
+            if (m_history_full_save_retry_schedule.ShouldRetry(checkpoint_tick))
             {
-                m_last_history_full_save_attempt_tick = checkpoint_tick;
                 if (SaveHistoryTrafficFull(m_history_rotate_backup_on_full_save))
                 {
                     m_history_full_save_pending = false;
+                    m_history_full_save_retry_schedule.Reset(GetTickCount64());
                     if (SaveHistoryTraffic())
-                        m_history_checkpoint_schedule.MarkSaved(current_kbytes, checkpoint_tick);
+                        m_history_checkpoint_schedule.MarkSaved(current_kbytes, GetTickCount64());
+                }
+                else
+                {
+                    m_history_full_save_retry_schedule.MarkFailed(GetTickCount64());
                 }
             }
         }
@@ -2857,7 +2858,9 @@ void CTrafficMonitorDlg::OnTrafficHistory()
     deque<HistoryTraffic> history_traffics;
     {
         CSingleLock sync(&m_history_traffic_critical, TRUE);
-        history_traffics = m_history_traffic.GetTraffics();
+        history_traffics.push_back(m_history_traffic.GetTodayTraffic());
+        const auto& stored_history = m_history_traffic.GetHistoryTraffics();
+        history_traffics.insert(history_traffics.end(), stored_history.begin(), stored_history.end());
     }
     CHistoryTrafficDlg historyDlg(history_traffics);
     historyDlg.DoModal();

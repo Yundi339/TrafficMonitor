@@ -394,6 +394,9 @@
     <ClInclude Include="HistoryTrafficFile.h">
       <Filter>源文件和头文件\公共的类\HistoryTrafficFile</Filter>
     </ClInclude>
+    <ClInclude Include="HistoryTrafficRetrySchedule.h">
+      <Filter>源文件和头文件\公共的类\HistoryTrafficFile</Filter>
+    </ClInclude>
     <ClInclude Include="Test.h">
       <Filter>测试</Filter>
     </ClInclude>

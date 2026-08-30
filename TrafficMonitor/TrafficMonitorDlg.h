@@ -25,6 +25,7 @@
 #include "PdhHardwareQuery/GpuUsage.h"
 #include "PdhHardwareQuery/DiskUsage.h"
 #include "HistoryTrafficFile.h"
+#include "HistoryTrafficRetrySchedule.h"
 #include <atomic>
 
 // CTrafficMonitorDlg 对话框
@@ -122,7 +123,7 @@ protected:
     CHistoryTrafficFile m_history_traffic{ theApp.m_history_traffic_path }; //储存历史流量
     CCriticalSection m_history_traffic_critical; //同步监控线程与UI线程的历史流量访问
     CHistoryTrafficCheckpointSchedule m_history_checkpoint_schedule;
-    ULONGLONG m_last_history_full_save_attempt_tick{};
+    CHistoryTrafficFullSaveRetrySchedule m_history_full_save_retry_schedule;
     bool m_history_rotate_backup_on_full_save{ true };
     bool m_history_full_save_pending{};
 
