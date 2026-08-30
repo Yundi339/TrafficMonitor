@@ -40,7 +40,7 @@ protected:
     //void GetIPAddress();	//获取IP地址
     void ShowInfo();
     void GetProgramElapsedTime();
-    MIB_IFROW& GetConnectIfTable(int connection_index);    //获取当前选择的网络连接的MIB_IFROW对象。connection_index为m_connections中的索引
+    const MIB_IFROW* GetConnectIfTable(int connection_index) const; //找不到对应表项时返回nullptr
     NetWorkConection GetConnection(int connection_index); //获取当前选择的网络连接的NetWorkConection对象。connection_index为m_connections中的索引
 
     //获取外网IP的线程函数

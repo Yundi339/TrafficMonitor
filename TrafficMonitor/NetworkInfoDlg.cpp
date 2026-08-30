@@ -24,8 +24,31 @@ CNetworkInfoDlg::~CNetworkInfoDlg()
 
 void CNetworkInfoDlg::ShowInfo()
 {
+    auto update_index_indicator = [&]() {
+        CString str;
+        const int display_index = m_connections.empty() ? 0 : m_connection_selected + 1;
+        str.Format(_T("%d/%d"), display_index, static_cast<int>(m_connections.size()));
+        SetDlgItemText(IDC_INDEX_STATIC, str);
+        CFont* font = GetFont();
+        CWnd* index_static = GetDlgItem(IDC_INDEX_STATIC);
+        if (m_current_connection == m_connection_selected && !theApp.m_cfg_data.m_select_all)
+            index_static->SetFont(&m_font_bold);
+        else
+            index_static->SetFont(font);
+    };
+
+    const MIB_IFROW* network_info_ptr = GetConnectIfTable(m_connection_selected);
+    if (network_info_ptr == nullptr)
+    {
+        const CString unavailable = CCommon::LoadText(IDS_GET_FAILED);
+        for (int row = 0; row <= 12; ++row)
+            m_info_list.SetItemText(row, 1, unavailable);
+        update_index_indicator();
+        return;
+    }
+
     CString temp;
-    MIB_IFROW& network_info = GetConnectIfTable(m_connection_selected);
+    const MIB_IFROW& network_info = *network_info_ptr;
     //接口名
     m_info_list.SetItemText(0, 1, network_info.wszName);
     //接口描述
@@ -113,16 +136,7 @@ void CNetworkInfoDlg::ShowInfo()
     temp.Format(_T("%s (%s)"), CCommon::IntToString(out_bytes_since_start, true, true), CCommon::DataSizeToString(out_bytes_since_start));
     m_info_list.SetItemText(12, 1, temp);
 
-    //显示当前选择指示
-    CString str;
-    str.Format(_T("%d/%d"), m_connection_selected + 1, m_connections.size());
-    SetDlgItemText(IDC_INDEX_STATIC, str);
-    CFont* font = GetFont();
-    CWnd* index_static = GetDlgItem(IDC_INDEX_STATIC);
-    if (m_current_connection == m_connection_selected && !theApp.m_cfg_data.m_select_all)
-        index_static->SetFont(&m_font_bold);
-    else
-        index_static->SetFont(font);
+    update_index_indicator();
 }
 
 void CNetworkInfoDlg::GetProgramElapsedTime()
@@ -136,16 +150,15 @@ void CNetworkInfoDlg::GetProgramElapsedTime()
     m_info_list.SetItemText(13, 1, temp);
 }
 
-MIB_IFROW& CNetworkInfoDlg::GetConnectIfTable(int connection_index)
+const MIB_IFROW* CNetworkInfoDlg::GetConnectIfTable(int connection_index) const
 {
-    static MIB_IFROW nouse{};
     if (connection_index >= 0 && connection_index < static_cast<int>(m_connections.size()))
     {
         int index = m_connections[connection_index].index;
         if (index >= 0 && index < static_cast<int>(m_if_rows.size()))
-            return m_if_rows[index];
+            return &m_if_rows[index];
     }
-    return nouse;
+    return nullptr;
 }
 
 NetWorkConection CNetworkInfoDlg::GetConnection(int connection_index)

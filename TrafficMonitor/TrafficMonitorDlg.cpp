@@ -31,21 +31,27 @@ namespace
     constexpr ULONGLONG TASKBAR_DPI_CHECK_INTERVAL_MS = 1000;
     constexpr unsigned int CONNECTION_UI_REQUEST_REINITIALIZE = 1u << 0;
     constexpr unsigned int CONNECTION_UI_REQUEST_AUTO_SELECT = 1u << 1;
+    constexpr unsigned int GET_IF_TABLE_MAX_ATTEMPTS = 4;
 
     DWORD AcquireIfTableSnapshot(std::vector<ULONGLONG>& storage, const MIB_IFTABLE*& table)
     {
         DWORD size = (std::max)(static_cast<DWORD>(sizeof(MIB_IFTABLE)),
             static_cast<DWORD>(storage.size() * sizeof(ULONGLONG)));
-        storage.resize((size + sizeof(ULONGLONG) - 1) / sizeof(ULONGLONG));
-        auto* mutable_table = reinterpret_cast<MIB_IFTABLE*>(storage.data());
-        DWORD result = GetIfTable(mutable_table, &size, FALSE);
-        if (result == ERROR_INSUFFICIENT_BUFFER)
+        DWORD result = ERROR_INSUFFICIENT_BUFFER;
+        for (unsigned int attempt = 0; attempt < GET_IF_TABLE_MAX_ATTEMPTS; ++attempt)
         {
             storage.resize((size + sizeof(ULONGLONG) - 1) / sizeof(ULONGLONG));
-            mutable_table = reinterpret_cast<MIB_IFTABLE*>(storage.data());
+            auto* mutable_table = reinterpret_cast<MIB_IFTABLE*>(storage.data());
             result = GetIfTable(mutable_table, &size, FALSE);
+            if (result == NO_ERROR)
+            {
+                table = mutable_table;
+                return result;
+            }
+            if (result != ERROR_INSUFFICIENT_BUFFER)
+                break;
         }
-        table = result == NO_ERROR ? mutable_table : nullptr;
+        table = nullptr;
         return result;
     }
 }
@@ -429,15 +435,25 @@ void CTrafficMonitorDlg::IniConnection()
     std::vector<ULONGLONG> if_table_storage;
     const MIB_IFTABLE* if_table{};
     const DWORD table_result = AcquireIfTableSnapshot(if_table_storage, if_table);
-    free(m_pIfTable);
-    m_pIfTable = nullptr;
-    if (table_result == NO_ERROR)
+    if (table_result != NO_ERROR)
     {
-        const size_t table_bytes = if_table_storage.size() * sizeof(ULONGLONG);
-        m_pIfTable = static_cast<MIB_IFTABLE*>(malloc(table_bytes));
-        if (m_pIfTable != nullptr)
-            memcpy(m_pIfTable, if_table, table_bytes);
+        CString info;
+        info.Format(_T("Unable to refresh the shared interface table (error %lu); retaining the previous snapshot."), table_result);
+        CCommon::WriteLogRateLimited(info, theApp.m_log_path.c_str(), _T("refresh-shared-if-table"));
+        return;
     }
+
+    const size_t table_bytes = if_table_storage.size() * sizeof(ULONGLONG);
+    auto* new_if_table = static_cast<MIB_IFTABLE*>(malloc(table_bytes));
+    if (new_if_table == nullptr)
+    {
+        CCommon::WriteLogRateLimited(_T("Unable to allocate the shared interface table; retaining the previous snapshot."),
+            theApp.m_log_path.c_str(), _T("refresh-shared-if-table"));
+        return;
+    }
+    memcpy(new_if_table, if_table, table_bytes);
+    free(m_pIfTable);
+    m_pIfTable = new_if_table;
 
     //获取当前所有的连接，并保存到m_connections容器中
     m_connections.clear();
@@ -455,15 +471,6 @@ void CTrafficMonitorDlg::IniConnection()
     else if (m_pIfTable != nullptr)
     {
         CAdapterCommon::GetAllIfTableInfo(m_connections, m_pIfTable);
-    }
-    else
-    {
-        CString info;
-        if (table_result == NO_ERROR)
-            info = _T("Unable to allocate the shared interface table.");
-        else
-            info.Format(_T("Unable to refresh the shared interface table (error %lu)."), table_result);
-        CCommon::WriteLogRateLimited(info, theApp.m_log_path.c_str(), _T("refresh-shared-if-table"));
     }
 
     //如果在设置了“显示所有网络连接”时设置了“选择全部”，则改为“自动选择”
@@ -1290,6 +1297,8 @@ void CTrafficMonitorDlg::DoMonitorAcquisition()
     //每轮使用局部网卡表，工作线程不再修改UI线程拥有的m_pIfTable。
     const MIB_IFTABLE* if_table{};
     const DWORD rtn = AcquireIfTableSnapshot(m_monitor_if_table_storage, if_table);
+    if (rtn == NO_ERROR && !connection_state.initialized)
+        RequestConnectionUiAction(CONNECTION_UI_REQUEST_REINITIALIZE);
     auto get_if_row = [&](int connection_index) {
         MIB_IFROW empty_row{};
         if (if_table == nullptr || connection_index < 0
@@ -1677,6 +1686,7 @@ void CTrafficMonitorDlg::DoMonitorAcquisition()
 void CTrafficMonitorDlg::PublishConnectionAcquisitionState()
 {
     ConnectionAcquisitionState state;
+    state.initialized = true;
     state.connections = m_connections;
     state.selected = m_connection_selected;
     state.select_all = theApp.m_cfg_data.m_select_all;
