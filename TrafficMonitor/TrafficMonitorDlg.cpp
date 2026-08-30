@@ -54,6 +54,41 @@ namespace
         table = nullptr;
         return result;
     }
+
+    DWORD GetInterfaceRowCompatible(const NET_LUID& interface_luid, NET_IFINDEX interface_index, MIB_IF_ROW2& row)
+    {
+        if (interface_luid.Value == 0 && interface_index == 0)
+            return ERROR_NOT_FOUND;
+        row = {};
+        if (interface_luid.Value != 0)
+            row.InterfaceLuid = interface_luid;
+        else
+            row.InterfaceIndex = interface_index;
+        DWORD result = GetIfEntry2(&row);
+        if (result != ERROR_NOT_SUPPORTED && result != ERROR_CALL_NOT_IMPLEMENTED)
+            return result;
+
+        MIB_IFROW legacy_row{};
+        if (interface_luid.Value != 0)
+        {
+            result = ConvertInterfaceLuidToIndex(&interface_luid, &legacy_row.dwIndex);
+            if (result != NO_ERROR)
+                return result;
+        }
+        else
+        {
+            legacy_row.dwIndex = interface_index;
+        }
+        result = GetIfEntry(&legacy_row);
+        if (result == NO_ERROR)
+        {
+            row.InOctets = legacy_row.dwInOctets;
+            row.OutOctets = legacy_row.dwOutOctets;
+            row.OperStatus = legacy_row.dwOperStatus == IF_OPER_STATUS_OPERATIONAL
+                ? IfOperStatusUp : IfOperStatusDown;
+        }
+        return result;
+    }
 }
 
 
@@ -413,10 +448,11 @@ void CTrafficMonitorDlg::AutoSelect()
     //自动选择连接时，查找已发送和已接收字节数之和最多的那个连接，并将其设置为当前查看的连接
     for (size_t i{}; i < m_connections.size(); i++)
     {
-        auto table = GetConnectIfTable(i);
-        if (table.dwOperStatus == IF_OPER_STATUS_OPERATIONAL)     //只选择网络状态为正常的连接
+        MIB_IF_ROW2 row{};
+        if (GetInterfaceRowCompatible(m_connections[i].interface_luid, m_connections[i].interface_index, row) == NO_ERROR
+            && row.OperStatus == IfOperStatusUp)     //只选择网络状态为正常的连接
         {
-            in_out_bytes = table.dwInOctets + table.dwOutOctets;
+            in_out_bytes = row.InOctets + row.OutOctets;
             if (in_out_bytes > max_in_out_bytes)
             {
                 max_in_out_bytes = in_out_bytes;
@@ -1294,38 +1330,58 @@ void CTrafficMonitorDlg::DoMonitorAcquisition()
     }
     const ConnectionAcquisitionState& connection_state = m_monitor_connection_state;
 
-    //每轮使用局部网卡表，工作线程不再修改UI线程拥有的m_pIfTable。
-    const MIB_IFTABLE* if_table{};
-    const DWORD rtn = AcquireIfTableSnapshot(m_monitor_if_table_storage, if_table);
-    if (rtn == NO_ERROR && !connection_state.initialized)
+    DWORD rtn = NO_ERROR;
+    if (!connection_state.initialized)
         RequestConnectionUiAction(CONNECTION_UI_REQUEST_REINITIALIZE);
-    auto get_if_row = [&](int connection_index) {
-        MIB_IFROW empty_row{};
-        if (if_table == nullptr || connection_index < 0
-            || connection_index >= static_cast<int>(connection_state.connections.size()))
-            return empty_row;
-
-        const int table_index = connection_state.connections[connection_index].index;
-        if (table_index < 0 || table_index >= static_cast<int>(if_table->dwNumEntries))
-            return empty_row;
-        return if_table->table[table_index];
+    auto get_if_row = [&](const NetWorkConection& connection, MIB_IF_ROW2& row) {
+        return GetInterfaceRowCompatible(connection.interface_luid, connection.interface_index, row);
     };
 
     if (!connection_state.select_all)        //获取当前选中连接的网速
     {
-        auto table = get_if_row(connection_state.selected);
-        m_in_bytes = table.dwInOctets;
-        m_out_bytes = table.dwOutOctets;
+        if (connection_state.selected < 0
+            || connection_state.selected >= static_cast<int>(connection_state.connections.size()))
+        {
+            rtn = ERROR_NOT_FOUND;
+            m_in_bytes = 0;
+            m_out_bytes = 0;
+        }
+        else
+        {
+            MIB_IF_ROW2 row{};
+            rtn = get_if_row(connection_state.connections[connection_state.selected], row);
+            m_in_bytes = rtn == NO_ERROR ? row.InOctets : 0;
+            m_out_bytes = rtn == NO_ERROR ? row.OutOctets : 0;
+        }
     }
     else        //获取全部连接的网速
     {
         m_in_bytes = 0;
         m_out_bytes = 0;
-        for (size_t i{}; i < connection_state.connections.size(); i++)
+        std::set<std::pair<bool, ULONG64>> counted_interfaces;
+        for (const auto& connection : connection_state.connections)
         {
-            auto table = get_if_row(static_cast<int>(i));
-            m_in_bytes += table.dwInOctets;
-            m_out_bytes += table.dwOutOctets;
+            if (connection.interface_luid.Value == 0 && connection.interface_index == 0)
+            {
+                rtn = ERROR_NOT_FOUND;
+                m_in_bytes = 0;
+                m_out_bytes = 0;
+                break;
+            }
+            const auto interface_identity = std::make_pair(connection.interface_luid.Value != 0,
+                connection.interface_luid.Value != 0 ? connection.interface_luid.Value : connection.interface_index);
+            if (!counted_interfaces.insert(interface_identity).second)
+                continue;
+            MIB_IF_ROW2 row{};
+            rtn = get_if_row(connection, row);
+            if (rtn != NO_ERROR)
+            {
+                m_in_bytes = 0;
+                m_out_bytes = 0;
+                break;
+            }
+            m_in_bytes += row.InOctets;
+            m_out_bytes += row.OutOctets;
         }
     }
 
@@ -1439,16 +1495,8 @@ void CTrafficMonitorDlg::DoMonitorAcquisition()
     {
         RequestConnectionUiAction(CONNECTION_UI_REQUEST_REINITIALIZE);
         CString info;
-        if (rtn == ERROR_INSUFFICIENT_BUFFER)
-        {
-            info = CCommon::LoadText(IDS_INSUFFICIENT_BUFFER);
-            info.Replace(_T("<%cnt%>"), CCommon::IntToString(connection_state.restart_count));
-        }
-        else
-        {
-            info.Format(_T("GetIfTable failed with error %lu."), rtn);
-        }
-        CCommon::WriteLogRateLimited(info, theApp.m_log_path.c_str(), _T("get-if-table-error"));
+        info.Format(_T("GetIfEntry2 failed with error %lu."), rtn);
+        CCommon::WriteLogRateLimited(info, theApp.m_log_path.c_str(), _T("get-if-entry2-error"));
     }
 
     if (m_monitor_time_cnt % GetMonitorTimerCount(3) == GetMonitorTimerCount(3) - 1)
@@ -1473,27 +1521,6 @@ void CTrafficMonitorDlg::DoMonitorAcquisition()
         if (interface_count_result == NO_ERROR)
             last_interface_num = interface_num;
 
-        const auto selected_row = get_if_row(connection_state.selected);
-        const string descr = (const char*)selected_row.bDescr;
-        if (rtn == NO_ERROR && !connection_state.connections.empty() && descr != connection_state.connection_name)
-        {
-            //写入额外的调试信息
-            if (theApp.m_debug_log)
-            {
-                CString log_str;
-                log_str = _T("连接名称不匹配：\r\n");
-                log_str += _T("IfTable description: ");
-                log_str += descr.c_str();
-                log_str += _T("\r\nm_connection_name: ");
-                log_str += connection_state.connection_name.c_str();
-                CCommon::WriteLog(log_str, (theApp.m_config_dir + L".\\connections.log").c_str());
-            }
-
-            RequestConnectionUiAction(CONNECTION_UI_REQUEST_REINITIALIZE);
-            CString info = CCommon::LoadText(IDS_CONNECTION_NOT_MATCH);
-            info.Replace(_T("<%cnt%>"), CCommon::IntToString(connection_state.restart_count));
-            CCommon::WriteLogRateLimited(info, theApp.m_log_path.c_str(), _T("connection-name-mismatch"));
-        }
     }
 
     bool lite_version = false;
@@ -1691,7 +1718,6 @@ void CTrafficMonitorDlg::PublishConnectionAcquisitionState()
     state.selected = m_connection_selected;
     state.select_all = theApp.m_cfg_data.m_select_all;
     state.auto_select = theApp.m_cfg_data.m_auto_select;
-    state.connection_name = theApp.m_cfg_data.m_connection_name;
     state.restart_count = m_restart_cnt;
 
     CSingleLock sync(&m_connection_snapshot_critical, TRUE);

@@ -76,22 +76,36 @@ void CAdapterCommon::RefreshIpAddress(vector<NetWorkConection>& adapters)
 
 void CAdapterCommon::GetIfTableInfo(vector<NetWorkConection>& adapters, MIB_IFTABLE* pIfTable)
 {
-	//依次在IfTable里查找每个连接
-	for (size_t i{}; i < adapters.size(); i++)
+	if (pIfTable == nullptr)
 	{
-		if (adapters[i].description.empty())
+		adapters.clear();
+		return;
+	}
+
+	//依次在IfTable里查找每个连接
+	for (auto iter = adapters.begin(); iter != adapters.end();)
+	{
+		if (iter->description.empty())
+		{
+			iter = adapters.erase(iter);
 			continue;
+		}
 		int index;
-		index = FindConnectionInIfTable(adapters[i].description, pIfTable);
+		index = FindConnectionInIfTable(iter->description, pIfTable);
 		if (index == -1)		//如果使用精确匹配的方式没有找到，则采用模糊匹配的方式再查找一次
-			index = FindConnectionInIfTableFuzzy(adapters[i].description, pIfTable);
-		//if (index != -1)
-		//{
-		adapters[i].index = index;
-		adapters[i].in_bytes = pIfTable->table[index].dwInOctets;
-		adapters[i].out_bytes = pIfTable->table[index].dwOutOctets;
-		adapters[i].description_2 = (const char*)pIfTable->table[index].bDescr;
-		//}
+			index = FindConnectionInIfTableFuzzy(iter->description, pIfTable);
+		if (index < 0 || index >= static_cast<int>(pIfTable->dwNumEntries))
+		{
+			iter = adapters.erase(iter);
+			continue;
+		}
+		iter->index = index;
+		iter->interface_index = pIfTable->table[index].dwIndex;
+		ConvertInterfaceIndexToLuid(iter->interface_index, &iter->interface_luid);
+		iter->in_bytes = pIfTable->table[index].dwInOctets;
+		iter->out_bytes = pIfTable->table[index].dwOutOctets;
+		iter->description_2 = (const char*)pIfTable->table[index].bDescr;
+		++iter;
 	}
 }
 
@@ -105,6 +119,8 @@ void CAdapterCommon::GetAllIfTableInfo(vector<NetWorkConection>& adapters, MIB_I
 		NetWorkConection connection;
 		connection.description = connection.description_2 = (const char*)pIfTable->table[i].bDescr;
 		connection.index = i;
+		connection.interface_index = pIfTable->table[i].dwIndex;
+		ConvertInterfaceIndexToLuid(connection.interface_index, &connection.interface_luid);
 		connection.in_bytes = pIfTable->table[i].dwInOctets;
 		connection.out_bytes = pIfTable->table[i].dwOutOctets;
 		for (size_t j{}; j < adapters_tmp.size(); j++)
@@ -123,6 +139,8 @@ void CAdapterCommon::GetAllIfTableInfo(vector<NetWorkConection>& adapters, MIB_I
 
 int CAdapterCommon::FindConnectionInIfTable(string connection, MIB_IFTABLE* pIfTable)
 {
+	if (pIfTable == nullptr)
+		return -1;
 	for (size_t i{}; i < pIfTable->dwNumEntries; i++)
 	{
 		string descr = (const char*)pIfTable->table[i].bDescr;
@@ -134,6 +152,8 @@ int CAdapterCommon::FindConnectionInIfTable(string connection, MIB_IFTABLE* pIfT
 
 int CAdapterCommon::FindConnectionInIfTableFuzzy(string connection, MIB_IFTABLE* pIfTable)
 {
+	if (pIfTable == nullptr || pIfTable->dwNumEntries == 0)
+		return -1;
 	for (size_t i{}; i < pIfTable->dwNumEntries; i++)
 	{
 		string descr = (const char*)pIfTable->table[i].bDescr;
@@ -148,7 +168,7 @@ int CAdapterCommon::FindConnectionInIfTableFuzzy(string connection, MIB_IFTABLE*
 	}
 	//如果还是没有找到，则使用字符串匹配算法查找
 	double max_degree{};
-	int best_index{};
+	int best_index{ -1 };
 	for (size_t i{}; i < pIfTable->dwNumEntries; i++)
 	{
 		string descr = (const char*)pIfTable->table[i].bDescr;
