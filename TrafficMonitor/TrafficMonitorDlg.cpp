@@ -713,11 +713,13 @@ void CTrafficMonitorDlg::UpdateNotifyIconTip()
 
 bool CTrafficMonitorDlg::SaveHistoryTraffic()
 {
+    CSingleLock sync(&m_history_traffic_critical, TRUE);
     return m_history_traffic.SaveTodayOnly();
 }
 
 bool CTrafficMonitorDlg::SaveHistoryTrafficFull()
 {
+    CSingleLock sync(&m_history_traffic_critical, TRUE);
     if (!m_history_traffic.Save())
         return false;
     m_history_traffic.SaveBackup();
@@ -726,6 +728,7 @@ bool CTrafficMonitorDlg::SaveHistoryTrafficFull()
 
 void CTrafficMonitorDlg::LoadHistoryTraffic()
 {
+    CSingleLock sync(&m_history_traffic_critical, TRUE);
     bool recovery_changed = m_history_traffic.Load();
     CHistoryTrafficFile backup_file(theApp.m_history_traffic_path + L".bak");
     backup_file.Load();
@@ -1294,52 +1297,55 @@ void CTrafficMonitorDlg::DoMonitorAcquisition()
     //检测当前日期是否改变，如果已改变，就向历史流量列表插入一个新的日期
     SYSTEMTIME current_time;
     GetLocalTime(&current_time);
-    static int last_check_day = -1;
-    static unsigned __int64 last_checkpoint_kbytes = 0;
-    static bool checkpoint_initialized = false;
-    const HistoryTraffic& today_traffic = m_history_traffic.GetTodayTraffic();
-    if (today_traffic.year != current_time.wYear || today_traffic.month != current_time.wMonth || today_traffic.day != current_time.wDay)
     {
-        m_history_traffic.OnDateChanged();
-        theApp.m_today_up_traffic = 0;
-        theApp.m_today_down_traffic = 0;
-        m_history_full_save_pending = !SaveHistoryTrafficFull();
-        checkpoint_initialized = !m_history_full_save_pending && SaveHistoryTraffic();
-        last_check_day = current_time.wDay;
-        last_checkpoint_kbytes = 0;
-    }
-
-    //统计今天已使用的流量
-    theApp.m_today_up_traffic += cur_out_speed;
-    theApp.m_today_down_traffic += cur_in_speed;
-    m_history_traffic.GetTodayTraffic().up_kBytes = theApp.m_today_up_traffic / 1024u;
-    m_history_traffic.GetTodayTraffic().down_kBytes = theApp.m_today_down_traffic / 1024u;
-    //每隔5秒保存一次小型检查点，强制终止时最多损失一个检查点周期的数据
-    if (m_monitor_time_cnt % GetMonitorTimerCount(5) == GetMonitorTimerCount(5) - 1)
-    {
-        unsigned __int64 current_kbytes = m_history_traffic.GetTodayTraffic().kBytes();
-        if (last_check_day != current_time.wDay)
+        CSingleLock history_sync(&m_history_traffic_critical, TRUE);
+        static int last_check_day = -1;
+        static unsigned __int64 last_checkpoint_kbytes = 0;
+        static bool checkpoint_initialized = false;
+        const HistoryTraffic& today_traffic = m_history_traffic.GetTodayTraffic();
+        if (today_traffic.year != current_time.wYear || today_traffic.month != current_time.wMonth || today_traffic.day != current_time.wDay)
         {
-            checkpoint_initialized = false;
+            m_history_traffic.OnDateChanged();
+            theApp.m_today_up_traffic = 0;
+            theApp.m_today_down_traffic = 0;
+            m_history_full_save_pending = !SaveHistoryTrafficFull();
+            checkpoint_initialized = !m_history_full_save_pending && SaveHistoryTraffic();
             last_check_day = current_time.wDay;
+            last_checkpoint_kbytes = 0;
         }
 
-        if (m_history_full_save_pending)
+        //统计今天已使用的流量
+        theApp.m_today_up_traffic += cur_out_speed;
+        theApp.m_today_down_traffic += cur_in_speed;
+        m_history_traffic.GetTodayTraffic().up_kBytes = theApp.m_today_up_traffic / 1024u;
+        m_history_traffic.GetTodayTraffic().down_kBytes = theApp.m_today_down_traffic / 1024u;
+        //每隔5秒保存一次小型检查点，强制终止时最多损失一个检查点周期的数据
+        if (m_monitor_time_cnt % GetMonitorTimerCount(5) == GetMonitorTimerCount(5) - 1)
         {
-            if (SaveHistoryTrafficFull())
+            unsigned __int64 current_kbytes = m_history_traffic.GetTodayTraffic().kBytes();
+            if (last_check_day != current_time.wDay)
             {
-                m_history_full_save_pending = false;
-                checkpoint_initialized = SaveHistoryTraffic();
-                if (checkpoint_initialized)
-                    last_checkpoint_kbytes = current_kbytes;
+                checkpoint_initialized = false;
+                last_check_day = current_time.wDay;
             }
-        }
-        else if (!checkpoint_initialized || current_kbytes != last_checkpoint_kbytes)
-        {
-            if (SaveHistoryTraffic())
+
+            if (m_history_full_save_pending)
             {
-                last_checkpoint_kbytes = current_kbytes;
-                checkpoint_initialized = true;
+                if (SaveHistoryTrafficFull())
+                {
+                    m_history_full_save_pending = false;
+                    checkpoint_initialized = SaveHistoryTraffic();
+                    if (checkpoint_initialized)
+                        last_checkpoint_kbytes = current_kbytes;
+                }
+            }
+            else if (!checkpoint_initialized || current_kbytes != last_checkpoint_kbytes)
+            {
+                if (SaveHistoryTraffic())
+                {
+                    last_checkpoint_kbytes = current_kbytes;
+                    checkpoint_initialized = true;
+                }
             }
         }
     }
@@ -2649,7 +2655,12 @@ void CTrafficMonitorDlg::OnChangeSkin()
 void CTrafficMonitorDlg::OnTrafficHistory()
 {
     // TODO: 在此添加命令处理程序代码
-    CHistoryTrafficDlg historyDlg(m_history_traffic.GetTraffics());
+    deque<HistoryTraffic> history_traffics;
+    {
+        CSingleLock sync(&m_history_traffic_critical, TRUE);
+        history_traffics = m_history_traffic.GetTraffics();
+    }
+    CHistoryTrafficDlg historyDlg(history_traffics);
     historyDlg.DoModal();
 }
 
