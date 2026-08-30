@@ -4,6 +4,7 @@
 #include "AdapterCommon.h"
 #include "BaseDialog.h"
 #include "ListCtrlEx.h"
+#include <memory>
 
 // CNetworkInfoDlg 对话框
 
@@ -34,8 +35,22 @@ protected:
     CString m_selected_string;
     CFont m_font_bold;		//默认字体的粗体
 
-    CWinThread* m_pGetIPThread{};			//获取外网IP的线程
     bool m_ip_acquired{ false };        //如果已获取外网ip地址，则为true
+
+    struct InternetIpRequestState
+    {
+        CCriticalSection critical;
+        HWND target_window{};
+        WORD language_id{};
+        bool pending{};
+        bool ready{};
+        bool closing{};
+        wstring ipv4_address;
+        wstring ipv4_location;
+        wstring ipv6_address;
+        wstring ipv6_location;
+    };
+    std::shared_ptr<InternetIpRequestState> m_ip_request_state;
 
     //void GetIPAddress();	//获取IP地址
     void ShowInfo();
@@ -45,6 +60,8 @@ protected:
 
     //获取外网IP的线程函数
     static UINT GetInternetIPThreadFunc(LPVOID lpParam);
+    void CancelInternetIpRequest();
+    afx_msg LRESULT OnInternetIpUpdated(WPARAM wParam, LPARAM lParam);
 
     virtual CString GetDialogName() const override;
 
