@@ -162,7 +162,6 @@ protected:
         int selected{};
         bool select_all{};
         bool auto_select{};
-        string connection_name;
         int restart_count{ -1 };
     };
 
@@ -185,7 +184,6 @@ protected:
     ULONGLONG m_connection_acquisition_state_version{};
     ConnectionAcquisitionState m_monitor_connection_state; //仅由采集线程读取
     ULONGLONG m_monitor_connection_state_version{};
-    vector<ULONGLONG> m_monitor_if_table_storage; //采集线程复用的局部网卡表缓冲
     std::atomic_uint m_connection_ui_request_flags{};
     CCriticalSection m_monitor_error_critical; //同步采集线程和UI线程间的错误消息
     CString m_pending_monitor_error;
