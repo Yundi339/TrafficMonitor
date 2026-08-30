@@ -5,6 +5,9 @@
 
 namespace
 {
+	constexpr unsigned __int64 FNV1A64_OFFSET_BASIS = 14695981039346656037ull;
+	constexpr unsigned __int64 FNV1A64_PRIME = 1099511628211ull;
+
 	bool HasTraffic(const HistoryTraffic& traffic)
 	{
 		return traffic.up_kBytes != 0 || traffic.down_kBytes != 0;
@@ -39,6 +42,62 @@ namespace
 			parsed = parsed * 10 + digit;
 		}
 		value = parsed;
+		return true;
+	}
+
+	void UpdateSnapshotChecksum(unsigned __int64& checksum, const string& line)
+	{
+		for (unsigned char ch : line)
+		{
+			checksum ^= ch;
+			checksum *= FNV1A64_PRIME;
+		}
+		checksum ^= static_cast<unsigned char>('\n');
+		checksum *= FNV1A64_PRIME;
+	}
+
+	bool ParseSnapshotHeader(const string& line, size_t& record_count)
+	{
+		const string prefix = "lines: \"";
+		if (line.size() <= prefix.size() || line.compare(0, prefix.size(), prefix) != 0 || line.back() != '"')
+			return false;
+
+		unsigned __int64 parsed_count{};
+		if (!ParseUnsigned64(line.substr(prefix.size(), line.size() - prefix.size() - 1), parsed_count)
+			|| parsed_count > (std::numeric_limits<size_t>::max)())
+		{
+			return false;
+		}
+		record_count = static_cast<size_t>(parsed_count);
+		return true;
+	}
+
+	bool ParseSnapshotChecksum(const string& line, unsigned __int64& checksum)
+	{
+		const string prefix = "checksum: \"fnv1a64:";
+		constexpr size_t HEX_DIGITS = 16;
+		if (line.size() != prefix.size() + HEX_DIGITS + 1
+			|| line.compare(0, prefix.size(), prefix) != 0 || line.back() != '"')
+		{
+			return false;
+		}
+
+		unsigned __int64 parsed{};
+		for (size_t index = prefix.size(); index < prefix.size() + HEX_DIGITS; ++index)
+		{
+			const char ch = line[index];
+			unsigned int digit{};
+			if (ch >= '0' && ch <= '9')
+				digit = static_cast<unsigned int>(ch - '0');
+			else if (ch >= 'a' && ch <= 'f')
+				digit = static_cast<unsigned int>(ch - 'a' + 10);
+			else if (ch >= 'A' && ch <= 'F')
+				digit = static_cast<unsigned int>(ch - 'A' + 10);
+			else
+				return false;
+			parsed = (parsed << 4) | digit;
+		}
+		checksum = parsed;
 		return true;
 	}
 
@@ -151,7 +210,7 @@ HistoryTraffic CHistoryTrafficFile::CreateTodayTraffic() const
 	return today_traffic;
 }
 
-void CHistoryTrafficFile::WriteTrafficRecord(ofstream& file, const HistoryTraffic& traffic) const
+void CHistoryTrafficFile::WriteTrafficRecord(ofstream& file, const HistoryTraffic& traffic, unsigned __int64* checksum) const
 {
 	char buff[64];
 	if (traffic.mixed)
@@ -164,16 +223,10 @@ void CHistoryTrafficFile::WriteTrafficRecord(ofstream& file, const HistoryTraffi
 		sprintf_s(buff, "%.4d/%.2d/%.2d %llu/%llu", traffic.year, traffic.month, 
 			traffic.day, traffic.up_kBytes, traffic.down_kBytes);
 	}
-	file << buff << "\n";
-}
-
-void CHistoryTrafficFile::UpdateCache() const
-{
-	// ¸üÐÂ»º´æ£ººÏ²¢½ñÌìµÄ¼ÇÂ¼ºÍÀúÊ·¼ÇÂ¼Á´±í
-	m_traffics_cache.clear();
-	m_traffics_cache.push_front(m_today_traffic);
-	m_traffics_cache.insert(m_traffics_cache.end(), m_history_traffics.begin(), m_history_traffics.end());
-	m_cache_dirty = false; // ±ê¼Ç»º´æÒÑ¸üÐÂ
+	const string line{ buff };
+	file << line << "\n";
+	if (checksum != nullptr)
+		UpdateSnapshotChecksum(*checksum, line);
 }
 
 bool CHistoryTrafficFile::SaveToFile(const wstring& file_path, const wstring& backup_path) const
@@ -181,11 +234,14 @@ bool CHistoryTrafficFile::SaveToFile(const wstring& file_path, const wstring& ba
 	return WriteFileAtomically(file_path, [this](ofstream& file) {
 		char buff[64];
 		size_t total_size = 1 + m_history_traffics.size();
-		sprintf_s(buff, "lines: \"%u\"", static_cast<unsigned int>(total_size));
+		sprintf_s(buff, "lines: \"%llu\"", static_cast<unsigned long long>(total_size));
 		file << buff << "\n";
-		WriteTrafficRecord(file, m_today_traffic);
+		unsigned __int64 checksum = FNV1A64_OFFSET_BASIS;
+		WriteTrafficRecord(file, m_today_traffic, &checksum);
 		for (const auto& history_traffic : m_history_traffics)
-			WriteTrafficRecord(file, history_traffic);
+			WriteTrafficRecord(file, history_traffic, &checksum);
+		sprintf_s(buff, "checksum: \"fnv1a64:%016llX\"", static_cast<unsigned long long>(checksum));
+		file << buff << "\n";
 	}, true, backup_path);
 }
 
@@ -196,7 +252,7 @@ bool CHistoryTrafficFile::Save(bool rotate_backup) const
 
 bool CHistoryTrafficFile::IsTodayRecord() const
 {
-	// ¼ì²é½ñÌìµÄ¼ÇÂ¼ÈÕÆÚÊÇ·ñÕýÈ·
+	// æ£€æŸ¥ä»Šå¤©çš„è®°å½•æ—¥æœŸæ˜¯å¦æ­£ç¡®
 	SYSTEMTIME current_time;
 	GetLocalTime(&current_time);
 	
@@ -297,44 +353,89 @@ bool CHistoryTrafficFile::RecoverFromCheckpoint()
 
 bool CHistoryTrafficFile::Load()
 {
-	m_today_traffic = HistoryTraffic{}; // ³õÊ¼»¯½ñÌìµÄ¼ÇÂ¼
-	m_history_traffics.clear(); // Çå¿ÕÀúÊ·¼ÇÂ¼Á´±í
+	m_today_traffic = HistoryTraffic{}; // åˆå§‹åŒ–ä»Šå¤©çš„è®°å½•
+	m_history_traffics.clear(); // æ¸…ç©ºåŽ†å²è®°å½•é“¾è¡¨
 	m_checkpoint_full_save_required = false;
-	InvalidateCache(); // ±ê¼Ç»º´æ¹ýÆÚ
+	m_snapshot_valid = false;
+	m_snapshot_rewrite_required = false;
 
 	ifstream file{ m_file_path };
 	string current_line;
 	HistoryTraffic traffic;
-	bool is_first_data_line = true; // ±ê¼ÇÊÇ·ñÊÇµÚÒ»ÌõÊý¾ÝÐÐ£¨½ñÌìµÄ¼ÇÂ¼£©
-	auto load_record = [&](const string& line)
+	bool is_first_data_line = true;
+	bool content_valid = true;
+	bool header_valid = false;
+	bool checksum_seen = false;
+	bool records_in_descending_order = true;
+	bool previous_record_available = false;
+	HistoryTraffic previous_record;
+	size_t expected_record_count{};
+	size_t parsed_record_count{};
+	unsigned __int64 calculated_checksum = FNV1A64_OFFSET_BASIS;
+	unsigned __int64 stored_checksum{};
+	auto load_record = [&](const string& line, bool include_in_checksum)
 	{
-		if (ParseTrafficRecord(line, traffic) && HasTraffic(traffic))
+		if (!ParseTrafficRecord(line, traffic))
+			return false;
+
+		++parsed_record_count;
+		if (include_in_checksum)
+			UpdateSnapshotChecksum(calculated_checksum, line);
+		if (previous_record_available && !HistoryTraffic::DateGreater(previous_record, traffic))
+			records_in_descending_order = false;
+		previous_record = traffic;
+		previous_record_available = true;
+		if (is_first_data_line)
 		{
-			if (is_first_data_line)
-			{
-				m_today_traffic = traffic;
-				is_first_data_line = false;
-			}
-			else
-				m_history_traffics.push_back(traffic);
+			m_today_traffic = traffic;
+			is_first_data_line = false;
 		}
+		else if (HasTraffic(traffic))
+			m_history_traffics.push_back(traffic);
+		return true;
 	};
 
 	if (file.is_open() && getline(file, current_line))
 	{
-		//¼æÈÝÈ±Ê§»òËð»µµÄlinesÍ·£ºÊ×ÐÐ±¾ÉíÊÇ¼ÇÂ¼Ê±ÈÔÈ»³¢ÊÔ»Ö¸´
-		if (current_line.find("lines:") != 0)
-			load_record(current_line);
+		header_valid = ParseSnapshotHeader(current_line, expected_record_count);
+		if (!header_valid)
+			content_valid = load_record(current_line, false);
 		while (getline(file, current_line))
-			load_record(current_line);
+		{
+			if (current_line.compare(0, 9, "checksum:") == 0)
+			{
+				if (checksum_seen || !ParseSnapshotChecksum(current_line, stored_checksum))
+					content_valid = false;
+				checksum_seen = true;
+				continue;
+			}
+			if (checksum_seen || !load_record(current_line, header_valid))
+				content_valid = false;
+		}
 	}
 	file.close();
+	m_snapshot_valid = header_valid && content_valid && checksum_seen
+		&& parsed_record_count == expected_record_count
+		&& calculated_checksum == stored_checksum;
 
-	MormalizeData();
+	const bool canonical_snapshot = m_snapshot_valid
+		&& records_in_descending_order
+		&& !is_first_data_line
+		&& parsed_record_count == 1 + m_history_traffics.size()
+		&& HistoryTraffic::DateEqual(m_today_traffic, CreateTodayTraffic())
+		&& !m_today_traffic.mixed;
+	if (canonical_snapshot)
+		RefreshDerivedData();
+	else
+		MormalizeData();
+	m_snapshot_rewrite_required = m_snapshot_valid && !canonical_snapshot;
 	bool checkpoint_recovered = RecoverFromCheckpoint();
 	if (checkpoint_recovered)
 	{
-		MormalizeData();
+		if (m_checkpoint_full_save_required)
+			MormalizeData();
+		else
+			RefreshDerivedData();
 	}
 	return checkpoint_recovered;
 }
@@ -361,69 +462,117 @@ bool CHistoryTrafficFile::MergeTrafficRecord(HistoryTraffic& target, const Histo
 size_t CHistoryTrafficFile::Merge(const CHistoryTrafficFile& history_traffic, bool prefer_larger_value)
 {
 	size_t changed_records{};
-	HistoryTraffic today_traffic = CreateTodayTraffic();
 	if (HistoryTraffic::DateEqual(m_today_traffic, history_traffic.m_today_traffic)
 		&& MergeTrafficRecord(m_today_traffic, history_traffic.m_today_traffic, prefer_larger_value))
 	{
 		++changed_records;
 	}
 
-	for (const HistoryTraffic& traffic : history_traffic.m_history_traffics)
+	list<HistoryTraffic> merged_history;
+	auto current = m_history_traffics.cbegin();
+	auto incoming = history_traffic.m_history_traffics.cbegin();
+	while (current != m_history_traffics.cend() && incoming != history_traffic.m_history_traffics.cend())
 	{
-		if (HistoryTraffic::DateGreater(traffic, today_traffic))
-			continue;
-
-		auto iter = std::find_if(m_history_traffics.begin(), m_history_traffics.end(),
-			[&traffic](const HistoryTraffic& existing) { return HistoryTraffic::DateEqual(existing, traffic); });
-		if (iter == m_history_traffics.end())
+		if (HistoryTraffic::DateEqual(*current, *incoming))
 		{
-			m_history_traffics.push_back(traffic);
-			++changed_records;
+			HistoryTraffic record = *current;
+			if (MergeTrafficRecord(record, *incoming, prefer_larger_value))
+				++changed_records;
+			merged_history.push_back(record);
+			++current;
+			++incoming;
 		}
-		else if (MergeTrafficRecord(*iter, traffic, prefer_larger_value))
+		else if (HistoryTraffic::DateGreater(*current, *incoming))
+		{
+			merged_history.push_back(*current);
+			++current;
+		}
+		else
+		{
+			merged_history.push_back(*incoming);
 			++changed_records;
+			++incoming;
+		}
 	}
+	merged_history.insert(merged_history.end(), current, m_history_traffics.cend());
+	for (; incoming != history_traffic.m_history_traffics.cend(); ++incoming)
+	{
+		merged_history.push_back(*incoming);
+		++changed_records;
+	}
+	m_history_traffics.swap(merged_history);
 
 	if (changed_records > 0)
-		MormalizeData();
+		RefreshDerivedData();
 	return changed_records;
+}
+
+size_t CHistoryTrafficFile::RestoreFromValidatedSnapshot(const CHistoryTrafficFile& history_traffic)
+{
+	if (!history_traffic.m_snapshot_valid)
+		return 0;
+
+	m_today_traffic = history_traffic.m_today_traffic;
+	m_history_traffics = history_traffic.m_history_traffics;
+	m_checkpoint_full_save_required = false;
+	m_snapshot_valid = false;
+	m_snapshot_rewrite_required = true;
+	RefreshDerivedData();
+	size_t restored_records = m_history_traffics.size() + (HasTraffic(m_today_traffic) ? 1 : 0);
+	if (RecoverFromCheckpoint())
+	{
+		if (m_checkpoint_full_save_required)
+			MormalizeData();
+		else
+			RefreshDerivedData();
+		if (restored_records == 0)
+			restored_records = 1;
+	}
+	return restored_records;
 }
 
 void CHistoryTrafficFile::OnDateChanged()
 {
-	// ÈÕÆÚ¸Ä±äÊ±£¬½«½ñÌìµÄ¼ÇÂ¼ÒÆµ½ÀúÊ·¼ÇÂ¼Á´±íµÄÇ°Ãæ£¬È»ºó´´½¨ÐÂµÄ½ñÌìµÄ¼ÇÂ¼
+	// æ—¥æœŸæ”¹å˜æ—¶ï¼Œå°†ä»Šå¤©çš„è®°å½•ç§»åˆ°åŽ†å²è®°å½•é“¾è¡¨çš„å‰é¢ï¼Œç„¶åŽåˆ›å»ºæ–°çš„ä»Šå¤©çš„è®°å½•
 	
-	// Èç¹û½ñÌìµÄ¼ÇÂ¼ÓÐÊý¾Ý£¬½«ÆäÒÆµ½ÀúÊ·¼ÇÂ¼Á´±í
+	// å¦‚æžœä»Šå¤©çš„è®°å½•æœ‰æ•°æ®ï¼Œå°†å…¶ç§»åˆ°åŽ†å²è®°å½•é“¾è¡¨
 	if (HasTraffic(m_today_traffic))
 	{
 		m_history_traffics.push_front(m_today_traffic);
-		// Á¢¼´ÅÅÐò£¬È·±£Êý¾ÝÒ»ÖÂÐÔ£¨°´ÈÕÆÚ´Ó´óµ½Ð¡£©
+		// ç«‹å³æŽ’åºï¼Œç¡®ä¿æ•°æ®ä¸€è‡´æ€§ï¼ˆæŒ‰æ—¥æœŸä»Žå¤§åˆ°å°ï¼‰
 		if (m_history_traffics.size() >= 2)
 		{
 			m_history_traffics.sort(HistoryTraffic::DateGreater);
 		}
 	}
 	
-	// ´´½¨ÐÂµÄ½ñÌìµÄ¼ÇÂ¼
+	// åˆ›å»ºæ–°çš„ä»Šå¤©çš„è®°å½•
 	m_today_traffic = CreateTodayTraffic();
 	
-	// ¸üÐÂÍ³¼Æ
+	// æ›´æ–°ç»Ÿè®¡
 	m_today_up_traffic = 0;
 	m_today_down_traffic = 0;
 	m_size = 1 + m_history_traffics.size();
-	InvalidateCache(); // ±ê¼Ç»º´æ¹ýÆÚ
+}
+
+void CHistoryTrafficFile::RefreshDerivedData()
+{
+	m_today_up_traffic = KBytesToBytes(m_today_traffic.up_kBytes);
+	m_today_down_traffic = KBytesToBytes(m_today_traffic.down_kBytes);
+	m_today_traffic.mixed = false;
+	m_size = 1 + m_history_traffics.size();
 }
 
 void CHistoryTrafficFile::MormalizeData()
 {
 	HistoryTraffic today_traffic = CreateTodayTraffic();
 
-	// ÏÈ¶ÔÀúÊ·¼ÇÂ¼Á´±íÅÅÐò£¨°´ÈÕÆÚ´Ó´óµ½Ð¡£©£¬ÒÔ±ãºóÐø²éÕÒºÍºÏ²¢
+	// å…ˆå¯¹åŽ†å²è®°å½•é“¾è¡¨æŽ’åºï¼ˆæŒ‰æ—¥æœŸä»Žå¤§åˆ°å°ï¼‰ï¼Œä»¥ä¾¿åŽç»­æŸ¥æ‰¾å’Œåˆå¹¶
 	if (m_history_traffics.size() >= 2)
 	{
 		m_history_traffics.sort(HistoryTraffic::DateGreater);
 
-		// ºÏ²¢ÏàÍ¬ÈÕÆÚµÄ¼ÇÂ¼
+		// åˆå¹¶ç›¸åŒæ—¥æœŸçš„è®°å½•
 		auto it = m_history_traffics.begin();
 		while (it != m_history_traffics.end())
 		{
@@ -443,14 +592,14 @@ void CHistoryTrafficFile::MormalizeData()
 		}
 	}
 
-	// ÇåÀíÈÕÆÚÍíÓÚµ±Ç°ÈÕÆÚµÄÀúÊ·¼ÇÂ¼£¨ÏµÍ³Ê±¼ä¿ÉÄÜ±»µ÷ÕûÁË£©
-	// ÀúÊ·¼ÇÂ¼Ó¦¸Ã¶¼ÊÇ¹ýÈ¥µÄÈÕÆÚ£¬²»Ó¦¸ÃÓÐÎ´À´µÄÈÕÆÚ
+	// æ¸…ç†æ—¥æœŸæ™šäºŽå½“å‰æ—¥æœŸçš„åŽ†å²è®°å½•ï¼ˆç³»ç»Ÿæ—¶é—´å¯èƒ½è¢«è°ƒæ•´äº†ï¼‰
+	// åŽ†å²è®°å½•åº”è¯¥éƒ½æ˜¯è¿‡åŽ»çš„æ—¥æœŸï¼Œä¸åº”è¯¥æœ‰æœªæ¥çš„æ—¥æœŸ
 	if (!m_history_traffics.empty())
 	{
 		auto it = m_history_traffics.begin();
 		while (it != m_history_traffics.end())
 		{
-			// Èç¹ûÀúÊ·¼ÇÂ¼µÄÈÕÆÚÍíÓÚ½ñÌì£¬ËµÃ÷ÊÇ"Î´À´"µÄ¼ÇÂ¼£¬Ó¦¸ÃÉ¾³ý
+			// å¦‚æžœåŽ†å²è®°å½•çš„æ—¥æœŸæ™šäºŽä»Šå¤©ï¼Œè¯´æ˜Žæ˜¯"æœªæ¥"çš„è®°å½•ï¼Œåº”è¯¥åˆ é™¤
 			if (HistoryTraffic::DateGreater(*it, today_traffic))
 			{
 				it = m_history_traffics.erase(it);
@@ -462,15 +611,15 @@ void CHistoryTrafficFile::MormalizeData()
 		}
 	}
 
-	// Èç¹û m_today_traffic µÄÈÕÆÚÒ²ÍíÓÚµ±Ç°ÈÕÆÚ£¬ËµÃ÷ÏµÍ³Ê±¼ä±»µ÷ÕûÁË£¬Ó¦¸ÃÖØÖÃ
+	// å¦‚æžœ m_today_traffic çš„æ—¥æœŸä¹Ÿæ™šäºŽå½“å‰æ—¥æœŸï¼Œè¯´æ˜Žç³»ç»Ÿæ—¶é—´è¢«è°ƒæ•´äº†ï¼Œåº”è¯¥é‡ç½®
 	if (HistoryTraffic::DateGreater(m_today_traffic, today_traffic))
 	{
-		// Èç¹û½ñÌìµÄ¼ÇÂ¼ÓÐÊý¾Ý£¬Ó¦¸Ã½«ÆäÒÆµ½ÀúÊ·¼ÇÂ¼£¨µ«ÈÕÆÚÍíÓÚ½ñÌì£¬»á±»ÉÏÃæµÄÇåÀíÂß¼­É¾³ý£©
-		// Ö±½ÓÖØÖÃÎª½ñÌìµÄ¼ÇÂ¼
+		// å¦‚æžœä»Šå¤©çš„è®°å½•æœ‰æ•°æ®ï¼Œåº”è¯¥å°†å…¶ç§»åˆ°åŽ†å²è®°å½•ï¼ˆä½†æ—¥æœŸæ™šäºŽä»Šå¤©ï¼Œä¼šè¢«ä¸Šé¢çš„æ¸…ç†é€»è¾‘åˆ é™¤ï¼‰
+		// ç›´æŽ¥é‡ç½®ä¸ºä»Šå¤©çš„è®°å½•
 		m_today_traffic = today_traffic;
 	}
 
-	// ÔÚÀúÊ·¼ÇÂ¼ÖÐ²éÕÒ½ñÌìµÄ¼ÇÂ¼£¨¿ÉÄÜÀúÊ·¼ÇÂ¼ÖÐ°üº¬ÁË½ñÌìµÄÊý¾Ý£©
+	// åœ¨åŽ†å²è®°å½•ä¸­æŸ¥æ‰¾ä»Šå¤©çš„è®°å½•ï¼ˆå¯èƒ½åŽ†å²è®°å½•ä¸­åŒ…å«äº†ä»Šå¤©çš„æ•°æ®ï¼‰
 	auto it = std::find_if(m_history_traffics.begin(), m_history_traffics.end(),
 		[&today_traffic](const HistoryTraffic& traffic) {
 			return HistoryTraffic::DateEqual(traffic, today_traffic);
@@ -478,44 +627,37 @@ void CHistoryTrafficFile::MormalizeData()
 
 	if (it != m_history_traffics.end())
 	{
-		// ÀúÊ·¼ÇÂ¼ÖÐÕÒµ½ÁË½ñÌìµÄ¼ÇÂ¼
+		// åŽ†å²è®°å½•ä¸­æ‰¾åˆ°äº†ä»Šå¤©çš„è®°å½•
 		if (HistoryTraffic::DateEqual(m_today_traffic, today_traffic))
 		{
-			// Èç¹û m_today_traffic Ò²ÊÇ½ñÌìµÄ£¬ºÏ²¢Êý¾Ý£¨±ÜÃâÊý¾Ý¶ªÊ§£©
+			// å¦‚æžœ m_today_traffic ä¹Ÿæ˜¯ä»Šå¤©çš„ï¼Œåˆå¹¶æ•°æ®ï¼ˆé¿å…æ•°æ®ä¸¢å¤±ï¼‰
 			m_today_traffic.up_kBytes = SaturatedAdd(m_today_traffic.up_kBytes, it->up_kBytes);
 			m_today_traffic.down_kBytes = SaturatedAdd(m_today_traffic.down_kBytes, it->down_kBytes);
 		}
 		else
 		{
-			// Èç¹û m_today_traffic ²»ÊÇ½ñÌìµÄ£¬ÓÃÀúÊ·¼ÇÂ¼ÖÐµÄÌæ»»
+			// å¦‚æžœ m_today_traffic ä¸æ˜¯ä»Šå¤©çš„ï¼Œç”¨åŽ†å²è®°å½•ä¸­çš„æ›¿æ¢
 			m_today_traffic = *it;
 		}
-		// ´ÓÀúÊ·¼ÇÂ¼ÖÐÉ¾³ý½ñÌìµÄ¼ÇÂ¼£¨ÒòÎªÓ¦¸ÃÖ»ÔÚ m_today_traffic ÖÐ£©
+		// ä»ŽåŽ†å²è®°å½•ä¸­åˆ é™¤ä»Šå¤©çš„è®°å½•ï¼ˆå› ä¸ºåº”è¯¥åªåœ¨ m_today_traffic ä¸­ï¼‰
 		m_history_traffics.erase(it);
 	}
 	else if (!HistoryTraffic::DateEqual(m_today_traffic, today_traffic))
 	{
-		// ÀúÊ·¼ÇÂ¼ÖÐÃ»ÓÐ½ñÌìµÄ¼ÇÂ¼£¬ÇÒ m_today_traffic Ò²²»ÊÇ½ñÌìµÄ
-		// Èç¹û m_today_traffic ÓÐÊý¾Ý£¬Ó¦¸Ã½«ÆäÒÆµ½ÀúÊ·¼ÇÂ¼Á´±í
+		// åŽ†å²è®°å½•ä¸­æ²¡æœ‰ä»Šå¤©çš„è®°å½•ï¼Œä¸” m_today_traffic ä¹Ÿä¸æ˜¯ä»Šå¤©çš„
+		// å¦‚æžœ m_today_traffic æœ‰æ•°æ®ï¼Œåº”è¯¥å°†å…¶ç§»åˆ°åŽ†å²è®°å½•é“¾è¡¨
 		if (HasTraffic(m_today_traffic))
 		{
 			m_history_traffics.push_front(m_today_traffic);
-			// ÖØÐÂÅÅÐò£¨ÒòÎª²åÈëÁËÐÂ¼ÇÂ¼£©
+			// é‡æ–°æŽ’åºï¼ˆå› ä¸ºæ’å…¥äº†æ–°è®°å½•ï¼‰
 			if (m_history_traffics.size() >= 2)
 			{
 				m_history_traffics.sort(HistoryTraffic::DateGreater);
 			}
 		}
-		// ´´½¨ÐÂµÄ½ñÌìµÄ¼ÇÂ¼
+		// åˆ›å»ºæ–°çš„ä»Šå¤©çš„è®°å½•
 		m_today_traffic = today_traffic;
 	}
 
-	// ¸üÐÂ½ñÌìµÄÁ÷Á¿Í³¼Æ
-	m_today_up_traffic = KBytesToBytes(m_today_traffic.up_kBytes);
-	m_today_down_traffic = KBytesToBytes(m_today_traffic.down_kBytes);
-	m_today_traffic.mixed = false;
-
-	// ¸üÐÂ×Ü¼ÇÂ¼Êý
-	m_size = 1 + m_history_traffics.size();
-	InvalidateCache(); // ±ê¼Ç»º´æ¹ýÆÚ
+	RefreshDerivedData();
 }

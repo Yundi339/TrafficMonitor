@@ -104,6 +104,27 @@ static void WriteHistoryFixture(const wstring& file_path, const vector<string>& 
         file << record << "\n";
 }
 
+static vector<string> ReadHistoryFixture(const wstring& file_path)
+{
+    ifstream file{ file_path };
+    vector<string> lines;
+    string line;
+    while (getline(file, line))
+        lines.push_back(line);
+    return lines;
+}
+
+static void WriteValidatedHistoryFixture(const wstring& file_path, const vector<string>& records)
+{
+    WriteHistoryFixture(file_path, records, true);
+    CHistoryTrafficFile fixture(file_path);
+    fixture.Load();
+    ASSERT(fixture.Save(false));
+    CHistoryTrafficFile validated(file_path);
+    validated.Load();
+    ASSERT(validated.IsSnapshotValid());
+}
+
 static void TestHistoryTrafficPersistence()
 {
     wchar_t temp_directory[MAX_PATH]{};
@@ -136,35 +157,48 @@ static void TestHistoryTrafficPersistence()
     previous_day_file_time.dwHighDateTime = previous_day_value.HighPart;
     SYSTEMTIME previous_day{};
     ASSERT(FileTimeToSystemTime(&previous_day_file_time, &previous_day));
+    SYSTEMTIME older_day{};
+    older_day.wYear = 2020;
+    older_day.wMonth = 1;
+    older_day.wDay = 2;
 
-    WriteHistoryFixture(file_path,
-        { MakeTrafficRecord(today, 100, 200), MakeTrafficRecord(previous_day, 5, 30) }, true);
+    WriteValidatedHistoryFixture(file_path,
+        { MakeTrafficRecord(today, 100, 200), MakeTrafficRecord(previous_day, 5, 30) });
     WriteHistoryFixture(checkpoint_path, { MakeTrafficRecord(today, 120, 250) }, false);
-    WriteHistoryFixture(backup_path,
-        { MakeTrafficRecord(today, 150, 190), MakeTrafficRecord(previous_day, 10, 20) }, true);
+    WriteValidatedHistoryFixture(backup_path,
+        { MakeTrafficRecord(today, 150, 190), MakeTrafficRecord(previous_day, 10, 20),
+            MakeTrafficRecord(older_day, 7, 9) });
 
     CHistoryTrafficFile traffic_file(file_path);
     ASSERT(traffic_file.Load());
+    ASSERT(traffic_file.IsSnapshotValid());
+    ASSERT(!traffic_file.IsBackupRecoveryRequired());
     ASSERT(!traffic_file.IsFullSaveRequiredAfterLoad());
     CHistoryTrafficFile backup_file(backup_path);
     backup_file.Load();
-    ASSERT(traffic_file.Merge(backup_file, true) == 2);
+    ASSERT(traffic_file.Merge(backup_file, true) == 3);
     ASSERT(traffic_file.GetTodayTraffic().up_kBytes == 150);
     ASSERT(traffic_file.GetTodayTraffic().down_kBytes == 250);
-    ASSERT(traffic_file.GetHistoryTraffics().size() == 1);
+    ASSERT(traffic_file.GetHistoryTraffics().size() == 2);
     const HistoryTraffic& previous_day_traffic = traffic_file.GetHistoryTraffics().front();
     ASSERT(previous_day_traffic.up_kBytes == 10);
     ASSERT(previous_day_traffic.down_kBytes == 30);
+    const HistoryTraffic& older_day_traffic = traffic_file.GetHistoryTraffics().back();
+    ASSERT(older_day_traffic.year == older_day.wYear);
+    ASSERT(older_day_traffic.up_kBytes == 7);
+    ASSERT(older_day_traffic.down_kBytes == 9);
     ASSERT(traffic_file.Save());
     ASSERT(CCommon::FileExist(backup_path.c_str()));
 
     CHistoryTrafficFile rotated_backup(backup_path);
     rotated_backup.Load();
+    ASSERT(rotated_backup.IsSnapshotValid());
     ASSERT(rotated_backup.GetTodayTraffic().up_kBytes == 100);
     ASSERT(rotated_backup.GetTodayTraffic().down_kBytes == 200);
 
     CHistoryTrafficFile reloaded_file(file_path);
     ASSERT(!reloaded_file.Load());
+    ASSERT(reloaded_file.IsSnapshotValid());
     ASSERT(reloaded_file.GetTodayTraffic().up_kBytes == 150);
     ASSERT(reloaded_file.GetTodayTraffic().down_kBytes == 250);
 
@@ -174,6 +208,9 @@ static void TestHistoryTrafficPersistence()
         { MakeTrafficRecord(today, 1, 2), "2024/02/31 3/4", "2024/01/01 invalid", "2024/01/01 18446744073709551616/1" }, false);
     CHistoryTrafficFile damaged_file(file_path);
     ASSERT(!damaged_file.Load());
+    ASSERT(!damaged_file.IsSnapshotValid());
+    ASSERT(damaged_file.IsBackupRecoveryRequired());
+    ASSERT(damaged_file.IsFullSaveRequiredAfterLoad());
     ASSERT(damaged_file.GetTodayTraffic().up_kBytes == 1);
     ASSERT(damaged_file.GetTodayTraffic().down_kBytes == 2);
     ASSERT(damaged_file.GetHistoryTraffics().empty());
@@ -182,6 +219,54 @@ static void TestHistoryTrafficPersistence()
     CHistoryTrafficFile past_checkpoint_file(file_path);
     ASSERT(past_checkpoint_file.Load());
     ASSERT(past_checkpoint_file.IsFullSaveRequiredAfterLoad());
+
+    DeleteFileW(checkpoint_path.c_str());
+    WriteValidatedHistoryFixture(file_path,
+        { MakeTrafficRecord(today, 11, 22), MakeTrafficRecord(previous_day, 33, 44) });
+    vector<string> snapshot_lines = ReadHistoryFixture(file_path);
+    ASSERT(snapshot_lines.size() == 4);
+
+    vector<string> corrupted_lines = snapshot_lines;
+    corrupted_lines[1] = MakeTrafficRecord(today, 999999, 22);
+    WriteHistoryFixture(file_path, corrupted_lines, false);
+    CHistoryTrafficFile corrupted_snapshot(file_path);
+    corrupted_snapshot.Load();
+    ASSERT(!corrupted_snapshot.IsSnapshotValid());
+
+    WriteValidatedHistoryFixture(backup_path,
+        { MakeTrafficRecord(today, 50, 60), MakeTrafficRecord(previous_day, 70, 80) });
+    WriteHistoryFixture(checkpoint_path, { MakeTrafficRecord(today, 75, 65) }, false);
+    CHistoryTrafficFile validated_backup(backup_path);
+    validated_backup.Load();
+    ASSERT(validated_backup.IsSnapshotValid());
+    ASSERT(corrupted_snapshot.RestoreFromValidatedSnapshot(validated_backup) == 2);
+    ASSERT(corrupted_snapshot.GetTodayTraffic().up_kBytes == 75);
+    ASSERT(corrupted_snapshot.GetTodayTraffic().down_kBytes == 65);
+    ASSERT(corrupted_snapshot.GetHistoryTraffics().front().up_kBytes == 70);
+    ASSERT(corrupted_snapshot.GetHistoryTraffics().front().down_kBytes == 80);
+    DeleteFileW(checkpoint_path.c_str());
+    DeleteFileW(backup_path.c_str());
+
+    vector<string> wrong_count_lines = snapshot_lines;
+    wrong_count_lines[0] = "lines: \"3\"";
+    WriteHistoryFixture(file_path, wrong_count_lines, false);
+    CHistoryTrafficFile wrong_count_snapshot(file_path);
+    wrong_count_snapshot.Load();
+    ASSERT(!wrong_count_snapshot.IsSnapshotValid());
+
+    vector<string> wrong_checksum_lines = snapshot_lines;
+    wrong_checksum_lines.back() = "checksum: \"fnv1a64:0000000000000000\"";
+    WriteHistoryFixture(file_path, wrong_checksum_lines, false);
+    CHistoryTrafficFile wrong_checksum_snapshot(file_path);
+    wrong_checksum_snapshot.Load();
+    ASSERT(!wrong_checksum_snapshot.IsSnapshotValid());
+
+    vector<string> trailing_data_lines = snapshot_lines;
+    trailing_data_lines.push_back(MakeTrafficRecord(older_day, 1, 1));
+    WriteHistoryFixture(file_path, trailing_data_lines, false);
+    CHistoryTrafficFile trailing_data_snapshot(file_path);
+    trailing_data_snapshot.Load();
+    ASSERT(!trailing_data_snapshot.IsSnapshotValid());
 
     cleanup();
 }

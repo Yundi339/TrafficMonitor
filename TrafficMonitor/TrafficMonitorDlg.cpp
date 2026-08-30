@@ -834,11 +834,19 @@ void CTrafficMonitorDlg::LoadHistoryTraffic()
     CSingleLock sync(&m_history_traffic_critical, TRUE);
     m_history_traffic.Load();
     bool full_save_required = m_history_traffic.IsFullSaveRequiredAfterLoad();
-    CHistoryTrafficFile backup_file(theApp.m_history_traffic_path + L".bak");
-    backup_file.Load();
-    size_t size_before = m_history_traffic.Size();
-    size_t recovered_count = m_history_traffic.Merge(backup_file, true);
-    full_save_required = full_save_required || recovered_count > 0;
+    const bool backup_recovery_required = m_history_traffic.IsBackupRecoveryRequired();
+    size_t recovered_count{};
+    size_t size_before{};
+    if (backup_recovery_required)
+    {
+        CHistoryTrafficFile backup_file(theApp.m_history_traffic_path + L".bak");
+        backup_file.Load();
+        size_before = m_history_traffic.Size();
+        recovered_count = backup_file.IsSnapshotValid()
+            ? m_history_traffic.RestoreFromValidatedSnapshot(backup_file)
+            : m_history_traffic.Merge(backup_file, true);
+        full_save_required = true;
+    }
 
     if (recovered_count > 0)
     {
@@ -848,8 +856,8 @@ void CTrafficMonitorDlg::LoadHistoryTraffic()
 
     if (full_save_required)
     {
-        //备份参与恢复时保留这份已知良好的备份，不用损坏或不完整的主文件覆盖它。
-        m_history_rotate_backup_on_full_save = recovered_count == 0;
+        //主快照未验证时保留现有备份，不用损坏、不完整或旧格式的主文件覆盖它。
+        m_history_rotate_backup_on_full_save = !backup_recovery_required;
         m_history_full_save_pending = !SaveHistoryTrafficFull(m_history_rotate_backup_on_full_save);
     }
 
