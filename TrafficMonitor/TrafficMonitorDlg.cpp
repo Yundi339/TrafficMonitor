@@ -779,6 +779,8 @@ void CTrafficMonitorDlg::LoadHistoryTraffic()
 
     theApp.m_today_up_traffic = m_history_traffic.GetTodayUpTraffic();
     theApp.m_today_down_traffic = m_history_traffic.GetTodayDownTraffic();
+    m_monitor_working_snapshot.today_up_traffic = theApp.m_today_up_traffic;
+    m_monitor_working_snapshot.today_down_traffic = theApp.m_today_down_traffic;
     const ULONGLONG current_tick = GetTickCount64();
     m_history_checkpoint_schedule.Reset(m_history_traffic.GetTodayTraffic().kBytes(), current_tick);
     m_last_history_full_save_attempt_tick = current_tick;
@@ -867,7 +869,8 @@ void CTrafficMonitorDlg::ApplySettings(COptionsDlg& optionsDlg)
     if (optionsDlg.m_tab3_dlg.IsMonitorTimeSpanModified())      //如果监控时间间隔改变了，则重设定时器
     {
         KillTimer(MONITOR_TIMER);
-        SetTimer(MONITOR_TIMER, theApp.m_general_data.monitor_time_span, NULL);
+        if (m_monitor_thread_started)
+            SetTimer(MONITOR_TIMER, theApp.m_general_data.monitor_time_span, NULL);
     }
 
 #ifndef WITHOUT_TEMPERATURE
@@ -1183,8 +1186,15 @@ BOOL CTrafficMonitorDlg::OnInitDialog()
     //设置1000毫秒触发的定时器
     SetTimer(MAIN_TIMER, 1000, NULL);
 
-    SetTimer(MONITOR_TIMER, theApp.m_general_data.monitor_time_span, NULL);
     m_monitor_thread_started = AfxBeginThread(MonitorThreadCallback, (LPVOID)this) != nullptr;
+    if (m_monitor_thread_started)
+    {
+        SetTimer(MONITOR_TIMER, theApp.m_general_data.monitor_time_span, NULL);
+    }
+    else
+    {
+        CCommon::WriteLog(_T("Failed to start the monitor worker thread."), theApp.m_log_path.c_str());
+    }
 
     //初始化窗口位置
     SetItemPosition();
@@ -1281,8 +1291,9 @@ void CTrafficMonitorDlg::DoMonitorAcquisition()
 
     unsigned __int64 cur_in_speed{}, cur_out_speed{};       //本次监控时间间隔内的上传和下载速度
 
+    const bool connection_changed = m_connection_change_flag.exchange(false, std::memory_order_acq_rel);
     //如果发送和接收的字节数为0或上次发送和接收的字节数为0或当前连接已改变时，网速无效
-    if ((m_in_bytes == 0 && m_out_bytes == 0) || (m_last_in_bytes == 0 && m_last_out_bytes == 0) || m_connection_change_flag
+    if ((m_in_bytes == 0 && m_out_bytes == 0) || (m_last_in_bytes == 0 && m_last_out_bytes == 0) || connection_changed
         || m_last_in_bytes > m_in_bytes || m_last_out_bytes > m_out_bytes)
     {
         cur_in_speed = 0;
@@ -1308,10 +1319,8 @@ void CTrafficMonitorDlg::DoMonitorAcquisition()
     last_net_speed_time = net_speed_time;
 
     //将当前监控时间间隔的流量转换成每秒时间间隔内的流量
-    theApp.m_in_speed = static_cast<unsigned __int64>(cur_in_speed * 1000 / time_span);
-    theApp.m_out_speed = static_cast<unsigned __int64>(cur_out_speed * 1000 / time_span);
-
-    m_connection_change_flag = false;    //清除连接发生变化的标志
+    m_monitor_working_snapshot.in_speed = static_cast<unsigned __int64>(cur_in_speed * 1000 / time_span);
+    m_monitor_working_snapshot.out_speed = static_cast<unsigned __int64>(cur_out_speed * 1000 / time_span);
 
     m_last_in_bytes = m_in_bytes;
     m_last_out_bytes = m_out_bytes;
@@ -1340,8 +1349,8 @@ void CTrafficMonitorDlg::DoMonitorAcquisition()
         if (today_traffic.year != current_time.wYear || today_traffic.month != current_time.wMonth || today_traffic.day != current_time.wDay)
         {
             m_history_traffic.OnDateChanged();
-            theApp.m_today_up_traffic = 0;
-            theApp.m_today_down_traffic = 0;
+            m_monitor_working_snapshot.today_up_traffic = 0;
+            m_monitor_working_snapshot.today_down_traffic = 0;
             m_last_history_full_save_attempt_tick = checkpoint_tick;
             m_history_rotate_backup_on_full_save = true;
             m_history_full_save_pending = !SaveHistoryTrafficFull(true);
@@ -1349,10 +1358,10 @@ void CTrafficMonitorDlg::DoMonitorAcquisition()
         }
 
         //统计今天已使用的流量
-        theApp.m_today_up_traffic += cur_out_speed;
-        theApp.m_today_down_traffic += cur_in_speed;
-        m_history_traffic.GetTodayTraffic().up_kBytes = theApp.m_today_up_traffic / 1024u;
-        m_history_traffic.GetTodayTraffic().down_kBytes = theApp.m_today_down_traffic / 1024u;
+        m_monitor_working_snapshot.today_up_traffic += cur_out_speed;
+        m_monitor_working_snapshot.today_down_traffic += cur_in_speed;
+        m_history_traffic.GetTodayTraffic().up_kBytes = m_monitor_working_snapshot.today_up_traffic / 1024u;
+        m_history_traffic.GetTodayTraffic().down_kBytes = m_monitor_working_snapshot.today_down_traffic / 1024u;
         //检查点使用自适应节流：大流量时至少间隔15秒，低流量时最多等待60秒。
         const unsigned __int64 current_kbytes = m_history_traffic.GetTodayTraffic().kBytes();
         if (m_history_full_save_pending)
@@ -1441,22 +1450,22 @@ void CTrafficMonitorDlg::DoMonitorAcquisition()
     m_get_disk_usage_by_pdh = false;
 
     //获取CPU使用率
-    theApp.m_cpu_usage = m_cpu_usage_helper.GetCpuUsage(theApp.m_general_data.cpu_usage_acquire_method == GeneralSettingData::CA_CPU_TIME);
+    m_monitor_working_snapshot.cpu_usage = m_cpu_usage_helper.GetCpuUsage(theApp.m_general_data.cpu_usage_acquire_method == GeneralSettingData::CA_CPU_TIME);
 
     //获取CPU频率
     //if (lite_version || is_arm64ec || !theApp.m_general_data.IsHardwareEnable(HI_CPU))
     //{
-    if (m_cpu_freq_helper.GetCpuFreq(theApp.m_cpu_freq))
+    if (m_cpu_freq_helper.GetCpuFreq(m_monitor_working_snapshot.cpu_freq))
         cpu_freq_acquired = true;
     //}
 
     //获取GPU利用率
     if (lite_version /*|| is_arm64ec*/ || !theApp.m_general_data.IsHardwareEnable(HI_GPU))
     {
-        if (m_gpu_usage_helper.GetGpuUsage(theApp.m_gpu_usage))
+        if (m_gpu_usage_helper.GetGpuUsage(m_monitor_working_snapshot.gpu_usage))
             gpu_usage_acquired = true;
         else
-            theApp.m_gpu_usage = -1;
+            m_monitor_working_snapshot.gpu_usage = -1;
     }
 
     //获取硬盘利用率
@@ -1482,19 +1491,19 @@ void CTrafficMonitorDlg::DoMonitorAcquisition()
                 }
             }
         }
-        if (m_disk_usage_helper.GetDiskUsage(disk_index, theApp.m_hdd_usage))
+        if (m_disk_usage_helper.GetDiskUsage(disk_index, m_monitor_working_snapshot.hdd_usage))
             m_get_disk_usage_by_pdh = true;
         else
-            theApp.m_hdd_usage = -1;
+            m_monitor_working_snapshot.hdd_usage = -1;
     }
 
     //获取内存利用率
     MEMORYSTATUSEX statex;
     statex.dwLength = sizeof(statex);
     GlobalMemoryStatusEx(&statex);
-    theApp.m_memory_usage = statex.dwMemoryLoad;
-    theApp.m_used_memory = static_cast<int>((statex.ullTotalPhys - statex.ullAvailPhys) / 1024);
-    theApp.m_total_memory = static_cast<int>(statex.ullTotalPhys / 1024);
+    m_monitor_working_snapshot.memory_usage = statex.dwMemoryLoad;
+    m_monitor_working_snapshot.used_memory = static_cast<int>((statex.ullTotalPhys - statex.ullAvailPhys) / 1024);
+    m_monitor_working_snapshot.total_memory = static_cast<int>(statex.ullTotalPhys / 1024);
 
 #ifndef WITHOUT_TEMPERATURE
     //获取温度
@@ -1525,19 +1534,19 @@ void CTrafficMonitorDlg::DoMonitorAcquisition()
                 _T("hardware-monitor-api-error"));
         }
         //theApp.m_cpu_temperature = theApp.m_pMonitor->CpuTemperature();
-        theApp.m_gpu_temperature = theApp.m_pMonitor->GpuTemperature();
+        m_monitor_working_snapshot.gpu_temperature = theApp.m_pMonitor->GpuTemperature();
         //theApp.m_hdd_temperature = theApp.m_pMonitor->HDDTemperature();
-        theApp.m_main_board_temperature = theApp.m_pMonitor->MainboardTemperature();
+        m_monitor_working_snapshot.main_board_temperature = theApp.m_pMonitor->MainboardTemperature();
         if (!gpu_usage_acquired)
-            theApp.m_gpu_usage = theApp.m_pMonitor->GpuUsage();
+            m_monitor_working_snapshot.gpu_usage = theApp.m_pMonitor->GpuUsage();
         if (!cpu_freq_acquired)
-            theApp.m_cpu_freq = theApp.m_pMonitor->CpuFreq();
+            m_monitor_working_snapshot.cpu_freq = theApp.m_pMonitor->CpuFreq();
         //获取CPU温度
         if (!theApp.m_pMonitor->AllCpuTemperature().empty())
         {
             if (theApp.m_general_data.cpu_core_name == CCommon::LoadText(IDS_AVREAGE_TEMPERATURE).GetString())  //如果选择了平均温度
             {
-                theApp.m_cpu_temperature = theApp.m_pMonitor->CpuTemperature();
+                m_monitor_working_snapshot.cpu_temperature = theApp.m_pMonitor->CpuTemperature();
             }
             else
             {
@@ -1547,12 +1556,12 @@ void CTrafficMonitorDlg::DoMonitorAcquisition()
                     iter = theApp.m_pMonitor->AllCpuTemperature().begin();
                     theApp.m_general_data.cpu_core_name = iter->first;
                 }
-                theApp.m_cpu_temperature = iter->second;
+                m_monitor_working_snapshot.cpu_temperature = iter->second;
             }
         }
         else
         {
-            theApp.m_cpu_temperature = -1;
+            m_monitor_working_snapshot.cpu_temperature = -1;
         }
         //获取硬盘温度
         if (!theApp.m_pMonitor->AllHDDTemperature().empty())
@@ -1563,11 +1572,11 @@ void CTrafficMonitorDlg::DoMonitorAcquisition()
                 iter = theApp.m_pMonitor->AllHDDTemperature().begin();
                 theApp.m_general_data.hard_disk_name = iter->first;
             }
-            theApp.m_hdd_temperature = iter->second;
+            m_monitor_working_snapshot.hdd_temperature = iter->second;
         }
         else
         {
-            theApp.m_hdd_temperature = -1;
+            m_monitor_working_snapshot.hdd_temperature = -1;
         }
         //获取硬盘利用率
         if (!m_get_disk_usage_by_pdh)
@@ -1580,11 +1589,11 @@ void CTrafficMonitorDlg::DoMonitorAcquisition()
                     iter = theApp.m_pMonitor->AllHDDUsage().begin();
                     theApp.m_general_data.hard_disk_name = iter->first;
                 }
-                theApp.m_hdd_usage = iter->second;
+                m_monitor_working_snapshot.hdd_usage = iter->second;
             }
             else
             {
-                theApp.m_hdd_usage = -1;
+                m_monitor_working_snapshot.hdd_usage = -1;
             }
         }
     }
@@ -1597,24 +1606,32 @@ void CTrafficMonitorDlg::DoMonitorAcquisition()
         {
             plugin_info.plugin->DataRequired();
             ITMPlugin::MonitorInfo monitor_info;
-            monitor_info.up_speed = theApp.m_out_speed;
-            monitor_info.down_speed = theApp.m_in_speed;
-            monitor_info.cpu_usage = theApp.m_cpu_usage;
-            monitor_info.memory_usage = theApp.m_memory_usage;
-            monitor_info.gpu_usage = theApp.m_gpu_usage;
-            monitor_info.hdd_usage = theApp.m_hdd_usage;
-            monitor_info.cpu_temperature = theApp.m_cpu_temperature;
-            monitor_info.gpu_temperature = theApp.m_gpu_temperature;
-            monitor_info.hdd_temperature = theApp.m_hdd_temperature;
-            monitor_info.cpu_freq = theApp.m_cpu_freq;
-            monitor_info.main_board_temperature = theApp.m_main_board_temperature;
+            monitor_info.up_speed = m_monitor_working_snapshot.out_speed;
+            monitor_info.down_speed = m_monitor_working_snapshot.in_speed;
+            monitor_info.cpu_usage = m_monitor_working_snapshot.cpu_usage;
+            monitor_info.memory_usage = m_monitor_working_snapshot.memory_usage;
+            monitor_info.gpu_usage = m_monitor_working_snapshot.gpu_usage;
+            monitor_info.hdd_usage = m_monitor_working_snapshot.hdd_usage;
+            monitor_info.cpu_temperature = m_monitor_working_snapshot.cpu_temperature;
+            monitor_info.gpu_temperature = m_monitor_working_snapshot.gpu_temperature;
+            monitor_info.hdd_temperature = m_monitor_working_snapshot.hdd_temperature;
+            monitor_info.cpu_freq = m_monitor_working_snapshot.cpu_freq;
+            monitor_info.main_board_temperature = m_monitor_working_snapshot.main_board_temperature;
             plugin_info.plugin->OnMonitorInfo(monitor_info);
         }
     }
 
     m_monitor_time_cnt++;
 
+    PublishMonitorSnapshot();
     PostMonitorInfoUpdate();
+}
+
+void CTrafficMonitorDlg::PublishMonitorSnapshot()
+{
+    CSingleLock sync(&m_monitor_snapshot_critical, TRUE);
+    m_pending_monitor_snapshot = m_monitor_working_snapshot;
+    m_monitor_snapshot_ready = true;
 }
 
 void CTrafficMonitorDlg::QueueMonitorErrorNotification(const CString& error_message)
@@ -2977,6 +2994,36 @@ afx_msg LRESULT CTrafficMonitorDlg::OnTaskbarWndClosed(WPARAM wParam, LPARAM lPa
 afx_msg LRESULT CTrafficMonitorDlg::OnMonitorInfoUpdated(WPARAM wParam, LPARAM lParam)
 {
     m_monitor_update_message_pending.store(false);
+
+    MonitorSnapshot monitor_snapshot;
+    bool monitor_snapshot_ready{};
+    {
+        CSingleLock sync(&m_monitor_snapshot_critical, TRUE);
+        monitor_snapshot_ready = m_monitor_snapshot_ready;
+        if (monitor_snapshot_ready)
+        {
+            monitor_snapshot = m_pending_monitor_snapshot;
+            m_monitor_snapshot_ready = false;
+        }
+    }
+    if (monitor_snapshot_ready)
+    {
+        theApp.m_in_speed = monitor_snapshot.in_speed;
+        theApp.m_out_speed = monitor_snapshot.out_speed;
+        theApp.m_today_up_traffic = monitor_snapshot.today_up_traffic;
+        theApp.m_today_down_traffic = monitor_snapshot.today_down_traffic;
+        theApp.m_cpu_usage = monitor_snapshot.cpu_usage;
+        theApp.m_memory_usage = monitor_snapshot.memory_usage;
+        theApp.m_used_memory = monitor_snapshot.used_memory;
+        theApp.m_total_memory = monitor_snapshot.total_memory;
+        theApp.m_cpu_temperature = monitor_snapshot.cpu_temperature;
+        theApp.m_cpu_freq = monitor_snapshot.cpu_freq;
+        theApp.m_gpu_temperature = monitor_snapshot.gpu_temperature;
+        theApp.m_hdd_temperature = monitor_snapshot.hdd_temperature;
+        theApp.m_main_board_temperature = monitor_snapshot.main_board_temperature;
+        theApp.m_gpu_usage = monitor_snapshot.gpu_usage;
+        theApp.m_hdd_usage = monitor_snapshot.hdd_usage;
+    }
 
     CString monitor_error;
     {
