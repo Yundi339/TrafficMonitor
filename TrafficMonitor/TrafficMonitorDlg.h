@@ -25,6 +25,7 @@
 #include "PdhHardwareQuery/GpuUsage.h"
 #include "PdhHardwareQuery/DiskUsage.h"
 #include "HistoryTrafficFile.h"
+#include <atomic>
 
 // CTrafficMonitorDlg 对话框
 class CTrafficMonitorDlg : public CDialog
@@ -106,7 +107,8 @@ protected:
 
     int m_restart_cnt{ -1 };    //重新初始化次数
     unsigned int m_timer_cnt{};     //定时器触发次数（自程序启动以来的秒数）
-    unsigned int m_taskbar_timer_cnt{0}; //适用于TaskBarDlg的定时器触发次数（自程序启动以来的秒数）
+    ULONGLONG m_last_taskbar_structure_check_tick{};
+    ULONGLONG m_last_taskbar_dpi_check_tick{};
     bool m_taskbar_reopen_pending{};
     unsigned int m_monitor_time_cnt{};
     int m_zero_speed_cnt{}; //如果检测不到网速，该变量就会自加
@@ -134,8 +136,8 @@ protected:
 
     void DoMonitorAcquisition();    //获取一次监控信息
     static UINT MonitorThreadCallback(LPVOID dwUser);   //获取监控信息的线程函数
-    bool m_monitor_data_required{ false };          //线程中需要获取监控数据标志，当需要获取监控数据时置为true，获取到一次监控数据时置为false
-    bool m_is_thread_exit{ false }; //线程退出标志
+    CEvent m_monitorDataRequiredEvent; //监控定时器用于唤醒工作线程的自动复位事件
+    std::atomic_bool m_is_thread_exit{ false }; //线程退出标志
     CEvent m_threadExitEvent;       //用于通知主线程工作线程已退出
 public:
     void ExitMonitorThread();       //停止监控线程
@@ -167,6 +169,8 @@ protected:
     void CloseTaskBarWnd(); //关闭任务栏窗口
     void OpenTaskBarWnd();  //打开任务栏窗口
     void ScheduleTaskbarWndReopen(UINT delay_ms = 500);
+    bool IsTaskbarHighFrequencyRefreshNeeded() const;
+    void ResetTaskbarMaintenanceTimer();
 
     void AddNotifyIcon();       //添加通知区图标
     void DeleteNotifyIcon();

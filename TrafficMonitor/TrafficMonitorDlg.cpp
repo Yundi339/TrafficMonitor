@@ -23,6 +23,14 @@
 #define new DEBUG_NEW
 #endif
 
+namespace
+{
+    constexpr UINT TASKBAR_GRAPH_TIMER_INTERVAL_MS = 100;
+    constexpr UINT TASKBAR_NORMAL_TIMER_INTERVAL_MS = 500;
+    constexpr ULONGLONG TASKBAR_STRUCTURE_CHECK_INTERVAL_MS = 2000;
+    constexpr ULONGLONG TASKBAR_DPI_CHECK_INTERVAL_MS = 1000;
+}
+
 
 
 // CTrafficMonitorDlg 对话框
@@ -795,6 +803,7 @@ void CTrafficMonitorDlg::ApplySettings(COptionsDlg& optionsDlg)
     theApp.m_main_wnd_data = optionsDlg.m_tab1_dlg.m_data;
     theApp.m_taskbar_data = optionsDlg.m_tab2_dlg.m_data;
     theApp.m_general_data = optionsDlg.m_tab3_dlg.m_data;
+    ResetTaskbarMaintenanceTimer();
     theApp.SendSettingsToPlugin();
 
     CGeneralSettingsDlg::CheckTaskbarDisplayItem();
@@ -1180,7 +1189,7 @@ BOOL CTrafficMonitorDlg::OnInitDialog()
     if (theApp.m_cfg_data.m_hide_main_window || (theApp.m_cfg_data.m_position_x == 0 && theApp.m_cfg_data.m_position_y == 0))
         SetTransparency(0);
 
-    SetTimer(TASKBAR_TIMER, 100, NULL);
+    ResetTaskbarMaintenanceTimer();
 
     return TRUE;  // 除非将焦点设置到控件，否则返回 TRUE
 }
@@ -1595,35 +1604,38 @@ UINT CTrafficMonitorDlg::MonitorThreadCallback(LPVOID dwUser)
     CTrafficMonitorDlg* pThis = (CTrafficMonitorDlg*)dwUser;
     while (true)
     {
-        //获取一次监控数据
-        if (pThis->m_monitor_data_required)
-        {
-            pThis->DoMonitorAcquisition();
-            //获取到监控数据后重置flag
-            pThis->m_monitor_data_required = false;
-        }
-        else
-        {
-            Sleep(10);
-        }
-
-        // 检查退出标志
-        if (pThis->m_is_thread_exit)
-        {
-            // 触发事件，通知主线程工作线程已退出
-            pThis->m_threadExitEvent.SetEvent();
-            return 0;
-        }
+        const DWORD wait_result = ::WaitForSingleObject(pThis->m_monitorDataRequiredEvent.m_hObject, INFINITE);
+        if (wait_result != WAIT_OBJECT_0 || pThis->m_is_thread_exit.load(std::memory_order_acquire))
+            break;
+        pThis->DoMonitorAcquisition();
     }
 
+    // 触发事件，通知主线程工作线程已退出
+    pThis->m_threadExitEvent.SetEvent();
     return 0;
+}
+
+bool CTrafficMonitorDlg::IsTaskbarHighFrequencyRefreshNeeded() const
+{
+    return theApp.m_cfg_data.m_show_task_bar_wnd
+        && theApp.m_taskbar_data.cm_graph_type
+        && (theApp.m_taskbar_data.show_status_bar || theApp.m_taskbar_data.show_netspeed_figure);
+}
+
+void CTrafficMonitorDlg::ResetTaskbarMaintenanceTimer()
+{
+    KillTimer(TASKBAR_TIMER);
+    SetTimer(TASKBAR_TIMER, IsTaskbarHighFrequencyRefreshNeeded()
+        ? TASKBAR_GRAPH_TIMER_INTERVAL_MS
+        : TASKBAR_NORMAL_TIMER_INTERVAL_MS, NULL);
 }
 
 
 void CTrafficMonitorDlg::ExitMonitorThread()
 {
     // 通知线程退出
-    m_is_thread_exit = true;
+    m_is_thread_exit.store(true, std::memory_order_release);
+    m_monitorDataRequiredEvent.SetEvent();
 
     // 等待线程退出
     ::WaitForSingleObject(m_threadExitEvent.m_hObject, 1000);
@@ -1636,7 +1648,7 @@ void CTrafficMonitorDlg::OnTimer(UINT_PTR nIDEvent)
     if (nIDEvent == MONITOR_TIMER)
     {
         //通知线程获取监控数据
-        m_monitor_data_required = true;
+        m_monitorDataRequiredEvent.SetEvent();
     }
 
     if (nIDEvent == MAIN_TIMER)
@@ -1993,9 +2005,11 @@ void CTrafficMonitorDlg::OnTimer(UINT_PTR nIDEvent)
 
     if (nIDEvent == TASKBAR_TIMER)
     {
-        ++m_taskbar_timer_cnt;
-        if (m_taskbar_timer_cnt % 5 == 0 && theApp.m_cfg_data.m_show_task_bar_wnd)
+        const ULONGLONG current_tick = GetTickCount64();
+        if (current_tick - m_last_taskbar_structure_check_tick >= TASKBAR_STRUCTURE_CHECK_INTERVAL_MS
+            && theApp.m_cfg_data.m_show_task_bar_wnd)
         {
+            m_last_taskbar_structure_check_tick = current_tick;
             const bool taskbar_wnd_valid = IsTaskbarWndValid();
             bool taskbar_structure_changed = !taskbar_wnd_valid;
             if (!taskbar_structure_changed)
@@ -2020,9 +2034,10 @@ void CTrafficMonitorDlg::OnTimer(UINT_PTR nIDEvent)
         if (IsTaskbarWndValid() && !m_taskbar_reopen_pending)
         {
             //启动时就隐藏主窗体的情况下，无法收到dpichange消息，故需要手动检查
-            //每次100ms*10执行一次屏幕DPI检查，并且尽可能少的检查操作系统版本
-            if (m_taskbar_timer_cnt % 10 == 0 && theApp.m_win_version.IsWindows8Point1OrLater())
+            if (current_tick - m_last_taskbar_dpi_check_tick >= TASKBAR_DPI_CHECK_INTERVAL_MS
+                && theApp.m_win_version.IsWindows8Point1OrLater())
             {
+                m_last_taskbar_dpi_check_tick = current_tick;
                 CTaskBarDlg::CheckWindowMonitorDPIAndHandle(*m_tBarDlg, [p_TaskBarDlg = m_tBarDlg](UINT new_dpi_x, UINT new_dpi_y)
                                                             {
                                                                 // auto s_dpi = std::to_string(new_dpi_x);
@@ -2593,6 +2608,7 @@ void CTrafficMonitorDlg::OnShowTaskBarWnd()
             theApp.m_general_data.show_notify_icon = true;
         }
     }
+    ResetTaskbarMaintenanceTimer();
     theApp.SaveConfig();
 }
 
@@ -2887,6 +2903,7 @@ afx_msg LRESULT CTrafficMonitorDlg::OnDpichanged(WPARAM wParam, LPARAM lParam)
 afx_msg LRESULT CTrafficMonitorDlg::OnTaskbarWndClosed(WPARAM wParam, LPARAM lParam)
 {
     theApp.m_cfg_data.m_show_task_bar_wnd = false;
+    ResetTaskbarMaintenanceTimer();
     KillTimer(RESTART_TASKBAR_TIMER);
     m_taskbar_reopen_pending = false;
     //关闭任务栏窗口后，如果没有显示通知区图标，且没有显示主窗口或设置了鼠标穿透，则将通知区图标显示出来
