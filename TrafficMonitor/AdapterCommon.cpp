@@ -101,6 +101,7 @@ void CAdapterCommon::GetIfTableInfo(vector<NetWorkConection>& adapters, MIB_IFTA
 		}
 		iter->index = index;
 		iter->interface_index = pIfTable->table[index].dwIndex;
+		ConvertInterfaceIndexToLuid(iter->interface_index, &iter->interface_luid);
 		iter->in_bytes = pIfTable->table[index].dwInOctets;
 		iter->out_bytes = pIfTable->table[index].dwOutOctets;
 		iter->description_2 = (const char*)pIfTable->table[index].bDescr;
@@ -119,6 +120,7 @@ void CAdapterCommon::GetAllIfTableInfo(vector<NetWorkConection>& adapters, MIB_I
 		connection.description = connection.description_2 = (const char*)pIfTable->table[i].bDescr;
 		connection.index = i;
 		connection.interface_index = pIfTable->table[i].dwIndex;
+		ConvertInterfaceIndexToLuid(connection.interface_index, &connection.interface_luid);
 		connection.in_bytes = pIfTable->table[i].dwInOctets;
 		connection.out_bytes = pIfTable->table[i].dwOutOctets;
 		for (size_t j{}; j < adapters_tmp.size(); j++)

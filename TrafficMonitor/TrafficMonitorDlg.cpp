@@ -55,18 +55,30 @@ namespace
         return result;
     }
 
-    DWORD GetInterfaceRowCompatible(NET_IFINDEX interface_index, MIB_IF_ROW2& row)
+    DWORD GetInterfaceRowCompatible(const NET_LUID& interface_luid, NET_IFINDEX interface_index, MIB_IF_ROW2& row)
     {
-        if (interface_index == 0)
+        if (interface_luid.Value == 0 && interface_index == 0)
             return ERROR_NOT_FOUND;
         row = {};
-        row.InterfaceIndex = interface_index;
+        if (interface_luid.Value != 0)
+            row.InterfaceLuid = interface_luid;
+        else
+            row.InterfaceIndex = interface_index;
         DWORD result = GetIfEntry2(&row);
         if (result != ERROR_NOT_SUPPORTED && result != ERROR_CALL_NOT_IMPLEMENTED)
             return result;
 
         MIB_IFROW legacy_row{};
-        legacy_row.dwIndex = interface_index;
+        if (interface_luid.Value != 0)
+        {
+            result = ConvertInterfaceLuidToIndex(&interface_luid, &legacy_row.dwIndex);
+            if (result != NO_ERROR)
+                return result;
+        }
+        else
+        {
+            legacy_row.dwIndex = interface_index;
+        }
         result = GetIfEntry(&legacy_row);
         if (result == NO_ERROR)
         {
@@ -437,7 +449,7 @@ void CTrafficMonitorDlg::AutoSelect()
     for (size_t i{}; i < m_connections.size(); i++)
     {
         MIB_IF_ROW2 row{};
-        if (GetInterfaceRowCompatible(m_connections[i].interface_index, row) == NO_ERROR
+        if (GetInterfaceRowCompatible(m_connections[i].interface_luid, m_connections[i].interface_index, row) == NO_ERROR
             && row.OperStatus == IfOperStatusUp)     //只选择网络状态为正常的连接
         {
             in_out_bytes = row.InOctets + row.OutOctets;
@@ -1322,7 +1334,7 @@ void CTrafficMonitorDlg::DoMonitorAcquisition()
     if (!connection_state.initialized)
         RequestConnectionUiAction(CONNECTION_UI_REQUEST_REINITIALIZE);
     auto get_if_row = [&](const NetWorkConection& connection, MIB_IF_ROW2& row) {
-        return GetInterfaceRowCompatible(connection.interface_index, row);
+        return GetInterfaceRowCompatible(connection.interface_luid, connection.interface_index, row);
     };
 
     if (!connection_state.select_all)        //获取当前选中连接的网速
@@ -1346,17 +1358,19 @@ void CTrafficMonitorDlg::DoMonitorAcquisition()
     {
         m_in_bytes = 0;
         m_out_bytes = 0;
-        std::set<NET_IFINDEX> counted_interfaces;
+        std::set<std::pair<bool, ULONG64>> counted_interfaces;
         for (const auto& connection : connection_state.connections)
         {
-            if (connection.interface_index == 0)
+            if (connection.interface_luid.Value == 0 && connection.interface_index == 0)
             {
                 rtn = ERROR_NOT_FOUND;
                 m_in_bytes = 0;
                 m_out_bytes = 0;
                 break;
             }
-            if (!counted_interfaces.insert(connection.interface_index).second)
+            const auto interface_identity = std::make_pair(connection.interface_luid.Value != 0,
+                connection.interface_luid.Value != 0 ? connection.interface_luid.Value : connection.interface_index);
+            if (!counted_interfaces.insert(interface_identity).second)
                 continue;
             MIB_IF_ROW2 row{};
             rtn = get_if_row(connection, row);

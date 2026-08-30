@@ -5,7 +5,8 @@
 struct NetWorkConection
 {
 	int index{ -1 };		//该连接在MIB_IFTABLE中的行号
-	NET_IFINDEX interface_index{}; //Windows稳定接口索引，用于64位计数查询
+	NET_LUID interface_luid{}; //Windows稳定接口标识，用于64位计数查询
+	NET_IFINDEX interface_index{}; //兼容层不支持LUID时使用的接口索引
 	string description;		//网络描述（获取自GetAdapterInfo）
 	string description_2;	//网络描述（获取自GetIfTable）
 	unsigned int in_bytes{};	//初始时已接收字节数
