@@ -70,18 +70,21 @@ auto CHResultException::GetHResult() const noexcept
 
 void LogHResultException(CHResultException& ex)
 {
-    auto str_hr = "HResult:" + std::to_string(ex.GetHResult());
-    CCommon::WriteLog(str_hr.c_str(), theApp.m_log_path.c_str());
-    auto* log = ex.what();
-    CCommon::WriteLog(log, theApp.m_log_path.c_str());
+    string log = "HResult:" + std::to_string(ex.GetHResult());
+    log += "\n";
+    log += ex.what();
     auto* p_error = ex.GetError().Get();
-    if (p_error == NULL)
+    if (p_error != NULL)
     {
-        return;
+        BSTR p_description{NULL};
+        if (SUCCEEDED(p_error->GetDescription(&p_description)) && p_description != NULL)
+        {
+            log += "\n";
+            log += CCommon::UnicodeToStr(p_description);
+            ::SysFreeString(p_description);
+        }
     }
-    BSTR p_description{NULL};
-    ThrowIfFailed(p_error->GetDescription(&p_description),
-                  TRAFFICMONITOR_ERROR_STR("Get description from IErrorInfo failed."));
-    CCommon::WriteLog(p_description, theApp.m_log_path.c_str());
-    ::SysFreeString(p_description);
+
+    const wstring rate_key = L"hresult-exception-" + std::to_wstring(ex.GetHResult());
+    CCommon::WriteLogRateLimited(log.c_str(), theApp.m_log_path.c_str(), rate_key.c_str());
 }

@@ -1357,7 +1357,7 @@ void CTaskBarDlg::OnPaint()
     catch (std::runtime_error& ex)
     {
         auto* log = ex.what();
-        CCommon::WriteLog(log, theApp.m_log_path.c_str());
+        CCommon::WriteLogRateLimited(log, theApp.m_log_path.c_str(), _T("taskbar-runtime-render-error"));
         // 目前只有它会主动抛异常，所有异常全部算它头上
         DrawCommonHelper::DefaultD2DDrawCommonExceptionHandler::IncreaseErrorCountManually();
         DrawCommonHelper::DefaultD2DDrawCommonExceptionHandler::HandleErrorCountIncrement();

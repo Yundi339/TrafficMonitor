@@ -43,7 +43,7 @@ namespace
 	}
 
 	template<typename Writer>
-	bool WriteFileAtomically(const wstring& file_path, Writer writer)
+	bool WriteFileAtomically(const wstring& file_path, Writer writer, bool durable)
 	{
 		const wstring temp_path = file_path + L".tmp";
 		DeleteFileW(temp_path.c_str());
@@ -63,28 +63,63 @@ namespace
 			return false;
 		}
 
-		HANDLE file_handle = CreateFileW(temp_path.c_str(), GENERIC_WRITE, FILE_SHARE_READ, nullptr,
-			OPEN_EXISTING, FILE_ATTRIBUTE_NORMAL, nullptr);
-		if (file_handle == INVALID_HANDLE_VALUE)
+		if (durable)
 		{
-			DeleteFileW(temp_path.c_str());
-			return false;
-		}
-		success = (FlushFileBuffers(file_handle) != FALSE);
-		CloseHandle(file_handle);
-		if (!success)
-		{
-			DeleteFileW(temp_path.c_str());
-			return false;
+			HANDLE file_handle = CreateFileW(temp_path.c_str(), GENERIC_WRITE, FILE_SHARE_READ, nullptr,
+				OPEN_EXISTING, FILE_ATTRIBUTE_NORMAL, nullptr);
+			if (file_handle == INVALID_HANDLE_VALUE)
+			{
+				DeleteFileW(temp_path.c_str());
+				return false;
+			}
+			success = (FlushFileBuffers(file_handle) != FALSE);
+			CloseHandle(file_handle);
+			if (!success)
+			{
+				DeleteFileW(temp_path.c_str());
+				return false;
+			}
 		}
 
-		if (!MoveFileExW(temp_path.c_str(), file_path.c_str(), MOVEFILE_REPLACE_EXISTING | MOVEFILE_WRITE_THROUGH))
+		DWORD move_flags = MOVEFILE_REPLACE_EXISTING;
+		if (durable)
+			move_flags |= MOVEFILE_WRITE_THROUGH;
+		if (!MoveFileExW(temp_path.c_str(), file_path.c_str(), move_flags))
 		{
 			DeleteFileW(temp_path.c_str());
 			return false;
 		}
 		return true;
 	}
+}
+
+void CHistoryTrafficCheckpointSchedule::Reset(unsigned __int64 current_kbytes, ULONGLONG current_tick)
+{
+	m_last_saved_kbytes = current_kbytes;
+	m_last_saved_tick = current_tick;
+	m_initialized = true;
+}
+
+bool CHistoryTrafficCheckpointSchedule::ShouldSave(unsigned __int64 current_kbytes, ULONGLONG current_tick) const
+{
+	if (!m_initialized || current_kbytes == m_last_saved_kbytes)
+		return false;
+
+	const ULONGLONG elapsed = current_tick >= m_last_saved_tick
+		? current_tick - m_last_saved_tick
+		: MAX_INTERVAL_MS;
+	if (elapsed >= MAX_INTERVAL_MS)
+		return true;
+
+	const unsigned __int64 delta = current_kbytes >= m_last_saved_kbytes
+		? current_kbytes - m_last_saved_kbytes
+		: (std::numeric_limits<unsigned __int64>::max)();
+	return elapsed >= MIN_INTERVAL_MS && delta >= TRAFFIC_THRESHOLD_KBYTES;
+}
+
+void CHistoryTrafficCheckpointSchedule::MarkSaved(unsigned __int64 current_kbytes, ULONGLONG current_tick)
+{
+	Reset(current_kbytes, current_tick);
 }
 
 CHistoryTrafficFile::CHistoryTrafficFile(const wstring& file_path)
@@ -145,7 +180,7 @@ bool CHistoryTrafficFile::SaveToFile(const wstring& file_path) const
 		WriteTrafficRecord(file, m_today_traffic);
 		for (const auto& history_traffic : m_history_traffics)
 			WriteTrafficRecord(file, history_traffic);
-	});
+	}, true);
 }
 
 bool CHistoryTrafficFile::Save() const
@@ -176,7 +211,7 @@ bool CHistoryTrafficFile::SaveTodayOnly() const
 
 	return WriteFileAtomically(GetCheckpointPath(), [this](ofstream& file) {
 		WriteTrafficRecord(file, m_today_traffic);
-	});
+	}, false);
 }
 
 bool CHistoryTrafficFile::ParseTrafficRecord(const string& line, HistoryTraffic& traffic) const

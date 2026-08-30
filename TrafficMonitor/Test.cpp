@@ -174,6 +174,28 @@ static void TestHistoryTrafficPersistence()
     cleanup();
 }
 
+static void TestHistoryTrafficCheckpointSchedule()
+{
+    CHistoryTrafficCheckpointSchedule schedule;
+    schedule.Reset(100, 1000);
+
+    ASSERT(!schedule.ShouldSave(100, 1000 + CHistoryTrafficCheckpointSchedule::MAX_INTERVAL_MS));
+    ASSERT(!schedule.ShouldSave(101, 1000 + CHistoryTrafficCheckpointSchedule::MIN_INTERVAL_MS));
+    ASSERT(schedule.ShouldSave(101, 1000 + CHistoryTrafficCheckpointSchedule::MAX_INTERVAL_MS));
+
+    schedule.MarkSaved(101, 1000 + CHistoryTrafficCheckpointSchedule::MAX_INTERVAL_MS);
+    const ULONGLONG saved_tick = 1000 + CHistoryTrafficCheckpointSchedule::MAX_INTERVAL_MS;
+    const unsigned __int64 threshold_total = 101 + CHistoryTrafficCheckpointSchedule::TRAFFIC_THRESHOLD_KBYTES;
+    ASSERT(!schedule.ShouldSave(threshold_total,
+        saved_tick + CHistoryTrafficCheckpointSchedule::MIN_INTERVAL_MS - 1));
+    ASSERT(schedule.ShouldSave(threshold_total,
+        saved_tick + CHistoryTrafficCheckpointSchedule::MIN_INTERVAL_MS));
+
+    schedule.Reset(500, 200000);
+    ASSERT(!schedule.ShouldSave(500, 100));
+    ASSERT(schedule.ShouldSave(501, 100));
+}
+
 ///////////////////////////////////////////////////////////////////////////////////////////////////////////////////
 CTest::CTest()
 {
@@ -193,6 +215,7 @@ void CTest::Test()
     //TestIni();
     TestPluginVersion();
     TestHistoryTrafficPersistence();
+    TestHistoryTrafficCheckpointSchedule();
 }
 
 void CTest::TestCommand()

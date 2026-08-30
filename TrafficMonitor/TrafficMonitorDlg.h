@@ -120,6 +120,8 @@ protected:
     SYSTEMTIME m_start_time;    //程序启动时的时间
     CHistoryTrafficFile m_history_traffic{ theApp.m_history_traffic_path }; //储存历史流量
     CCriticalSection m_history_traffic_critical; //同步监控线程与UI线程的历史流量访问
+    CHistoryTrafficCheckpointSchedule m_history_checkpoint_schedule;
+    ULONGLONG m_last_history_full_save_attempt_tick{};
     bool m_history_full_save_pending{};
 
     CToolTipCtrl m_tool_tips;

@@ -1,5 +1,23 @@
 #pragma once
 #include "CommonData.h"
+
+class CHistoryTrafficCheckpointSchedule
+{
+public:
+	static constexpr ULONGLONG MIN_INTERVAL_MS = 15ull * 1000;
+	static constexpr ULONGLONG MAX_INTERVAL_MS = 60ull * 1000;
+	static constexpr unsigned __int64 TRAFFIC_THRESHOLD_KBYTES = 4ull * 1024;
+
+	void Reset(unsigned __int64 current_kbytes, ULONGLONG current_tick);
+	bool ShouldSave(unsigned __int64 current_kbytes, ULONGLONG current_tick) const;
+	void MarkSaved(unsigned __int64 current_kbytes, ULONGLONG current_tick);
+
+private:
+	unsigned __int64 m_last_saved_kbytes{};
+	ULONGLONG m_last_saved_tick{};
+	bool m_initialized{};
+};
+
 class CHistoryTrafficFile
 {
 public:
