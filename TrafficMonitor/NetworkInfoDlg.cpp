@@ -485,12 +485,14 @@ void CNetworkInfoDlg::OnNMDblclkInfoList1(NMHDR* pNMHDR, LRESULT* pResult)
         }
         m_info_list.SetItemText(14, 1, CCommon::LoadText(IDS_ACQUIRING, _T("...")));
         m_info_list.SetItemText(15, 1, CCommon::LoadText(IDS_ACQUIRING, _T("...")));
-        auto* context = new std::shared_ptr<InternetIpRequestState>(m_ip_request_state);
-        if (AfxBeginThread(GetInternetIPThreadFunc, context) == nullptr)
+        auto* context = new (std::nothrow) std::shared_ptr<InternetIpRequestState>(m_ip_request_state);
+        if (context == nullptr || AfxBeginThread(GetInternetIPThreadFunc, context) == nullptr)
         {
             delete context;
-            CSingleLock sync(&m_ip_request_state->critical, TRUE);
-            m_ip_request_state->pending = false;
+            {
+                CSingleLock sync(&m_ip_request_state->critical, TRUE);
+                m_ip_request_state->pending = false;
+            }
             m_info_list.SetItemText(14, 1, CCommon::LoadText(IDS_GET_FAILED));
             m_info_list.SetItemText(15, 1, CCommon::LoadText(IDS_GET_FAILED));
         }

@@ -5,6 +5,7 @@
 #include "BaseDialog.h"
 #include "ListCtrlEx.h"
 #include <memory>
+#include <new>
 
 // CNetworkInfoDlg 对话框
 
