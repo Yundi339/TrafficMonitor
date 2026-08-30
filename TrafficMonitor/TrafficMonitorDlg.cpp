@@ -1473,13 +1473,13 @@ void CTrafficMonitorDlg::DoMonitorAcquisition()
                 if (SaveHistoryTrafficFull(m_history_rotate_backup_on_full_save))
                 {
                     m_history_full_save_pending = false;
-                    m_history_full_save_retry_schedule.Reset(checkpoint_tick);
+                    m_history_full_save_retry_schedule.Reset(GetTickCount64());
                     if (SaveHistoryTraffic())
-                        m_history_checkpoint_schedule.MarkSaved(current_kbytes, checkpoint_tick);
+                        m_history_checkpoint_schedule.MarkSaved(current_kbytes, GetTickCount64());
                 }
                 else
                 {
-                    m_history_full_save_retry_schedule.MarkFailed(checkpoint_tick);
+                    m_history_full_save_retry_schedule.MarkFailed(GetTickCount64());
                 }
             }
         }
