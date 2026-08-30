@@ -145,6 +145,8 @@ protected:
 
     std::map<CommonDisplayItem, std::list<int>> m_map_history_data;  //保存各项数据历史数据的链表，链表保存按照时间顺序，越靠近头部数据越新
     std::map<CommonDisplayItem, int> m_history_data_count;            //统计添加到历史数据链表的次数
+    ULONGLONG m_last_graph_sample_tick{};
+    bool m_sample_graph_on_current_paint{};
 
     bool m_connot_insert_to_task_bar{ false };	//如果窗口无法嵌入任务栏，则为true
     bool m_taskbar_on_top_or_bottom{ true };		//如果任务栏在屏幕顶部或底部，则为ture

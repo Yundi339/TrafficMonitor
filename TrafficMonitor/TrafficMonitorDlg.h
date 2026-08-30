@@ -129,7 +129,7 @@ protected:
 
     CToolTipCtrl m_tool_tips;
 
-    bool m_connection_change_flag{ false };     //如果执行过IniConnection()函数，该flag会置为true
+    std::atomic_bool m_connection_change_flag{ false }; //连接变化由UI线程通知采集线程
     bool m_is_foreground_fullscreen{ false };   //指示前台窗口是否正在全局显示
     bool m_menu_popuped{ false };               //指示当前是否有菜单处于弹出状态
 
@@ -137,11 +137,42 @@ protected:
 
     string m_connection_name_preferd{ theApp.m_cfg_data.m_connection_name };          //保存用户手动选择的网络连接名称
 
+    struct MonitorSnapshot
+    {
+        unsigned __int64 in_speed{};
+        unsigned __int64 out_speed{};
+        unsigned __int64 today_up_traffic{};
+        unsigned __int64 today_down_traffic{};
+        int cpu_usage{ -1 };
+        int memory_usage{ -1 };
+        int used_memory{};
+        int total_memory{};
+        float cpu_temperature{ -1 };
+        float cpu_freq{ -1 };
+        float gpu_temperature{ -1 };
+        float hdd_temperature{ -1 };
+        float main_board_temperature{ -1 };
+        int gpu_usage{ -1 };
+        int hdd_usage{ -1 };
+    };
+
     void DoMonitorAcquisition();    //获取一次监控信息
+    void PublishMonitorSnapshot(); //将完整采集快照发布给UI线程
+    void QueueMonitorErrorNotification(const CString& error_message); //将采集错误交给UI线程以非模态方式提示
+    void PostMonitorInfoUpdate(); //异步合并监控信息更新消息
     static UINT MonitorThreadCallback(LPVOID dwUser);   //获取监控信息的线程函数
     CEvent m_monitorDataRequiredEvent; //监控定时器用于唤醒工作线程的自动复位事件
     std::atomic_bool m_is_thread_exit{ false }; //线程退出标志
+    std::atomic_bool m_monitor_update_message_pending{ false }; //合并尚未处理的UI更新消息
+    CCriticalSection m_monitor_snapshot_critical; //同步完整监控快照的发布与读取
+    MonitorSnapshot m_monitor_working_snapshot; //仅由采集线程更新
+    MonitorSnapshot m_pending_monitor_snapshot; //等待UI线程一次性应用
+    bool m_monitor_snapshot_ready{};
+    CCriticalSection m_monitor_error_critical; //同步采集线程和UI线程间的错误消息
+    CString m_pending_monitor_error;
+    CString m_last_notified_monitor_error;
     CEvent m_threadExitEvent;       //用于通知主线程工作线程已退出
+    bool m_monitor_thread_started{};
 public:
     void ExitMonitorThread();       //停止监控线程
 
@@ -268,6 +299,7 @@ protected:
 public:
     afx_msg void OnShowNetSpeed();
     afx_msg BOOL OnQueryEndSession();
+    afx_msg void OnEndSession(BOOL bEnding);
     afx_msg void OnPaint();
 protected:
     afx_msg LRESULT OnDpichanged(WPARAM wParam, LPARAM lParam);
