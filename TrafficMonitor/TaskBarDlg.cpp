@@ -602,11 +602,6 @@ void CTaskBarDlg::DPI(CRect& rect) const
 
 CTaskBarDlg::ClassCheckWindowMonitorDPIAndHandle CTaskBarDlg::CheckWindowMonitorDPIAndHandle{};
 
-UINT CTaskBarDlg::ClassCheckWindowMonitorDPIAndHandle::buffered_dpi_x{0};
-UINT CTaskBarDlg::ClassCheckWindowMonitorDPIAndHandle::buffered_dpi_y{0};
-UINT CTaskBarDlg::ClassCheckWindowMonitorDPIAndHandle::dpi_x{0};
-UINT CTaskBarDlg::ClassCheckWindowMonitorDPIAndHandle::dpi_y{0};
-
 HWND CTaskBarDlg::FindTaskbarHandle(bool& is_scendary_display)
 {
     is_scendary_display = false;
@@ -1086,8 +1081,10 @@ void CTaskBarDlg::OnCancel()
         }
     }
 
+    const bool taskbar_structure_changed = IsTaskbarStructureChanged();
     DestroyWindow();
-    ResetTaskbarPos();
+    if (!taskbar_structure_changed)
+        ResetTaskbarPos();
 
     //CDialogEx::OnCancel();
 }
