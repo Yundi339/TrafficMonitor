@@ -3077,6 +3077,19 @@ afx_msg LRESULT CTrafficMonitorDlg::OnDpichanged(WPARAM wParam, LPARAM lParam)
         TRACE("Dpi changed: %d\n", dpi);
 
         theApp.SetDPI(dpi);
+
+        //任务栏可能位于另一个显示器，不能直接使用主窗口DPI。显示拓扑切换过程中
+        //轮询也可能读到瞬态值；稳定后若实例DPI仍不一致，重建一次以重建字体和布局。
+        if (pThis->IsTaskbarWndValid())
+        {
+            UINT taskbar_dpi_x{}, taskbar_dpi_y{};
+            if (theApp.DPIFromRect(pThis->m_tBarDlg->GetRectForDpiCheck(), &taskbar_dpi_x, &taskbar_dpi_y)
+                && taskbar_dpi_x != pThis->m_tBarDlg->GetDPI())
+            {
+                pThis->ScheduleTaskbarWndReopen(800);
+            }
+        }
+
         //当系统版本小于Windows 8.1时使用原来的行为
         if (pThis->IsTaskbarWndValid() && !theApp.m_win_version.IsWindows8Point1OrLater())
         {
