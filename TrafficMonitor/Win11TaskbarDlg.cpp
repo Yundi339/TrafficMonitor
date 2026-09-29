@@ -2,19 +2,61 @@
 #include "Win11TaskbarDlg.h"
 #include "WindowsSettingHelper.h"
 
+namespace
+{
+    bool IsSameRect(const CRect& left, const CRect& right)
+    {
+        return left.left == right.left && left.top == right.top
+            && left.right == right.right && left.bottom == right.bottom;
+    }
+
+    void WriteTaskbarDebugLog(const CString& message)
+    {
+        if (theApp.m_debug_log)
+            CCommon::WriteLog(message, (theApp.m_config_dir + L".\\debug.log").c_str());
+    }
+}
+
 void CWin11TaskbarDlg::AdjustTaskbarWndPos(bool force_adjust)
 {
-    ::GetWindowRect(m_hNotify, m_rcNotify);
-    ::GetWindowRect(m_hStart, m_rcStart);
+    CRect current_notify{};
+    CRect current_start{};
+    const bool notify_rect_valid = ::GetWindowRect(m_hNotify, current_notify);
+    const bool start_rect_valid = ::GetWindowRect(m_hStart, current_start);
+    if (!notify_rect_valid)
+        current_notify.SetRectEmpty();
+    if (!start_rect_valid)
+    {
+        WriteTaskbarDebugLog(_T("Win11 taskbar layout skipped: Start window rectangle is unavailable."));
+        return;
+    }
+    m_rcNotify = current_notify;
+    m_rcStart = current_start;
     m_rcStart.MoveToXY(m_rcStart.left - m_rcTaskbar.left, m_rcStart.top - m_rcTaskbar.top);
 
     //设置窗口大小
     m_rect.right = m_rect.left + m_window_width;
     m_rect.bottom = m_rect.top + m_window_height;
-    if (force_adjust || m_rcNotify.Width() != m_last_notify_width || m_rcStart.left != m_last_start_pos)   //如果最小化窗口的宽度改变了，重新设置任务栏窗口的位置
+    const bool geometry_changed = !m_layout_initialized
+        || !IsSameRect(m_rcNotify, m_last_notify_rect)
+        || !IsSameRect(m_rcStart, m_last_start_rect)
+        || !IsSameRect(m_rcTaskbar, m_last_taskbar_rect)
+        || m_taskbar_dpi != m_last_layout_dpi;
+    if (force_adjust || geometry_changed)
     {
-        m_last_notify_width = m_rcNotify.Width();
-        m_last_start_pos = m_rcStart.left;
+        CString debug_info;
+        debug_info.Format(_T("Win11 taskbar layout: force=%d geometry=%d dpi=%u taskbar=(%d,%d)-(%d,%d) notify=(%d,%d)-(%d,%d) start=(%d,%d)-(%d,%d) window=(%d,%d)-(%d,%d)"),
+            force_adjust, geometry_changed, m_taskbar_dpi,
+            m_rcTaskbar.left, m_rcTaskbar.top, m_rcTaskbar.right, m_rcTaskbar.bottom,
+            m_rcNotify.left, m_rcNotify.top, m_rcNotify.right, m_rcNotify.bottom,
+            m_rcStart.left, m_rcStart.top, m_rcStart.right, m_rcStart.bottom,
+            m_rect.left, m_rect.top, m_rect.right, m_rect.bottom);
+        WriteTaskbarDebugLog(debug_info);
+        m_last_notify_rect = m_rcNotify;
+        m_last_start_rect = m_rcStart;
+        m_last_taskbar_rect = m_rcTaskbar;
+        m_last_layout_dpi = m_taskbar_dpi;
+        m_layout_initialized = true;
         //任务窗口显示在右侧时，或者Windows11下任务栏左对齐时
         //（Windows11下，如果任务栏设置为左对齐，即使在“任务栏窗口设置”中设置了任务窗口显示在左边，窗口仍然显示在右边）
         if (!theApp.m_taskbar_data.tbar_wnd_on_left || !CWindowsSettingHelper::IsTaskbarCenterAlign())

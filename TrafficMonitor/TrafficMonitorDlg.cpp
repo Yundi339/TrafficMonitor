@@ -708,6 +708,12 @@ void CTrafficMonitorDlg::ScheduleTaskbarWndReopen(UINT delay_ms)
     // taskbar is rebuilt only after the final Explorer/display notification.
     KillTimer(RESTART_TASKBAR_TIMER);
     m_taskbar_reopen_pending = true;
+    if (theApp.m_debug_log)
+    {
+        CString log_info;
+        log_info.Format(_T("Taskbar reopen scheduled: delay=%u"), delay_ms);
+        CCommon::WriteLog(log_info, (theApp.m_config_dir + L".\\debug.log").c_str());
+    }
     if (SetTimer(RESTART_TASKBAR_TIMER, delay_ms, [](HWND, UINT, UINT_PTR, DWORD) {
         CTrafficMonitorDlg* pThis = CTrafficMonitorDlg::Instance();
         if (pThis != nullptr && ::IsWindow(pThis->GetSafeHwnd()))
@@ -3210,6 +3216,8 @@ LRESULT CTrafficMonitorDlg::OnDisplaychange(WPARAM wParam, LPARAM lParam)
 {
     GetScreenSize();
     CheckWindowPos(true);
+    if (theApp.m_debug_log)
+        CCommon::WriteLog(_T("Display change received; taskbar recovery scheduled."), (theApp.m_config_dir + L".\\debug.log").c_str());
     ScheduleTaskbarWndReopen(800);
     return 0;
 }
