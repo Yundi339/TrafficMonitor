@@ -484,7 +484,10 @@ bool CTaskBarDlg::AdjustWindowPos(bool force_adjust)
         force_adjust = true;
     }
 
+    m_layout_adjustment_deferred = false;
     AdjustTaskbarWndPos(force_adjust);
+    if (m_layout_adjustment_deferred)
+        return false;
 
     //如果窗口没有被成功嵌入到任务栏，窗口移动到了基于屏幕左上角的绝对位置，则修正窗口的位置
     if (m_connot_insert_to_task_bar)

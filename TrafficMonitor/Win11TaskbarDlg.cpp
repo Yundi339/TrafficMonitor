@@ -27,6 +27,7 @@ void CWin11TaskbarDlg::AdjustTaskbarWndPos(bool force_adjust)
         current_notify.SetRectEmpty();
     if (!start_rect_valid)
     {
+        m_layout_adjustment_deferred = true;
         WriteTaskbarDebugLog(_T("Win11 taskbar layout skipped: Start window rectangle is unavailable."));
         return;
     }
