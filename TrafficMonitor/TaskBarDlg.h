@@ -148,6 +148,7 @@ protected:
     bool m_menu_popuped{ false };               //指示当前是否有菜单处于弹出状态
     bool m_is_secondary_display{ false };       //是否显示在副显示器中
     bool m_is_width_changed{ false };
+    bool m_layout_adjustment_deferred{ false };
 
     UINT m_taskbar_dpi{};//TaskBarDlg自身专用dpi
 
